@@ -464,7 +464,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     st.divider()
     
     # Renderizar el formulario con los datos cargados
-    render_formulario_producto(pdata, modelo_existente=mod_p)
 
 
 # --- MENÚ Y NAVEGACIÓN ---
