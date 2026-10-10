@@ -546,11 +546,110 @@ with tab1:
             st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
     else:
         st.info("💡 Escribe un modelo o palabra clave para buscar productos.")
-        
+
 # TAB 2: ALTA MANUAL
 with tab2:
     if user["role"] in ["Administrador", "Inventario"]:
-        render_formulario_producto()
+        st.header("➕ Alta Manual de Producto")
+        st.caption("Llena los campos para dar de alta un producto individual en Supabase.")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            modelo_nuevo = st.text_input("Modelo / Código (*Requerido)", key="alta_modelo").strip()
+            nombre_nuevo = st.text_input("Nombre del Producto", key="alta_nombre")
+            cat_nueva = st.text_input("Categoría", key="alta_cat")
+            ubi_nueva = st.text_input("Ubicación", key="alta_ubi")
+            disp_nueva = st.selectbox("Disponibilidad", ["Disponible", "Vendido (V)"], key="alta_disp")
+        
+        with col2:
+            prov_nuevo = st.text_input("Proveedor", key="alta_prov")
+            fecha_adq = st.date_input("Fecha Adquisición", key="alta_fecha_adq")
+            factura_nueva = st.text_input("Factura / Ref", key="alta_factura")
+            desc_nueva = st.text_area("Descripción / Notas", key="alta_desc")
+
+        st.subheader("💰 Cálculos Financieros y Costos")
+        col_c1, col_c2, col_c3 = st.columns(3)
+        
+        with col_c1:
+            precio_adq = st.number_input("Precio Adquisición ($)", min_value=0.0, step=100.0, key="alta_p_adq")
+            costo_restauracion = st.number_input("Costo Restauración ($)", min_value=0.0, step=50.0, key="alta_p_rest")
+            flete_gastos = st.number_input("Flete / Gastos Varios ($)", min_value=0.0, step=50.0, key="alta_p_flete")
+            
+            # Cálculo directo en vivo de Costo Total
+            costo_total_calculado = precio_adq + costo_restauracion + flete_gastos
+            st.info(f"*Costo Total:* ${costo_total_calculado:,.2f}")
+
+        with col_c2:
+            st.markdown("*Showroom*")
+            factor_sr = st.number_input("Factor Multiplicador Showroom", min_value=1.0, value=2.5, step=0.1, key="alta_fact_sr")
+            
+            # Cálculos en vivo Showroom
+            precio_sug_sr = costo_total_calculado * factor_sr
+            # Regla de redondeo a 50 o 100
+            redondeo_sr = math.ceil(precio_sug_sr / 50.0) * 50 if precio_sug_sr > 0 else 0.0
+            
+            st.write(f"Precio Sugerido: *${precio_sug_sr:,.2f}*")
+            st.success(f"*Redondeo Showroom:* ${redondeo_sr:,.2f}")
+
+        with col_c3:
+            st.markdown("*Casa Palacio*")
+            factor_cp = st.number_input("Factor Multiplicador CP", min_value=1.0, value=3.0, step=0.1, key="alta_fact_cp")
+            
+            # Cálculos en vivo CP
+            precio_sug_cp = costo_total_calculado * factor_cp
+            redondeo_cp = math.ceil(precio_sug_cp / 50.0) * 50 if precio_sug_cp > 0 else 0.0
+            
+            st.write(f"Precio Sugerido CP: *${precio_sug_cp:,.2f}*")
+            st.success(f"*Redondeo Casa Palacio:* ${redondeo_cp:,.2f}")
+
+        st.divider()
+
+        # BOTÓN DE GUARDADO DIRECTO
+        if st.button("💾 Guardar Producto Completo", use_container_width=True, type="primary", key="btn_guardar_alta"):
+            if not modelo_nuevo:
+                st.error("❌ El campo 'Modelo / Código' es obligatorio para poder guardar.")
+            else:
+                with st.spinner("Guardando en Supabase..."):
+                    payload_json = {
+                        "MODELO": modelo_nuevo,
+                        "NOMBRE": nombre_nuevo,
+                        "CATEGORIA": cat_nueva,
+                        "UBICACION": ubi_nueva,
+                        "DISP": "V" if "Vendido" in disp_nueva else "",
+                        "PROVEEDOR": prov_nuevo,
+                        "FECHA_ADQUISICION": str(fecha_adq),
+                        "FACTURA": factura_nueva,
+                        "DESCRIPCION": desc_nueva,
+                        "PRECIO_ADQUISICION": precio_adq,
+                        "COSTO_RESTAURACION": costo_restauracion,
+                        "FLETE_GASTOS": flete_gastos,
+                        "COSTO_TOTAL": costo_total_calculado,
+                        "FACTOR_SHOWROOM": factor_sr,
+                        "PRECIO_SUGERIDO_SHOWROOM": precio_sug_sr,
+                        "REDONDEO_SHOWROOM": redondeo_sr,
+                        "FACTOR_CP": factor_cp,
+                        "PRECIO_SUGERIDO_CP": precio_sug_cp,
+                        "REDONDEO_CP": redondeo_cp
+                    }
+
+                    url_img_default = f"{SUPABASE_URL}/storage/v1/object/public/imagenes/{modelo_nuevo}.jpg"
+
+                    registro_db = {
+                        "MODELO": modelo_nuevo,
+                        "RUTA_IMAGEN": url_img_default,
+                        "datos_json": json.dumps(payload_json, ensure_ascii=False)
+                    }
+
+                    try:
+                        res = supabase.table("productos").upsert(registro_db, on_conflict="MODELO").execute()
+                        if res.data:
+                            st.balloons()
+                            st.success(f"🎉 ¡Producto *{modelo_nuevo}* guardado exitosamente en Supabase!")
+                            st.caption("Ya puedes buscarlo inmediatamente en la pestaña de Búsqueda.")
+                        else:
+                            st.error("⚠️ No se recibió confirmación de Supabase al guardar.")
+                    except Exception as ex_alta:
+                        st.error(f"❌ Error al guardar en la base de datos: {ex_alta}")
     else:
         st.info("Tu rol no tiene permisos para dar de alta productos.")
 
