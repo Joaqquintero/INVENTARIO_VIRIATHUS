@@ -481,6 +481,50 @@ with st.sidebar:
 st.title("🔍 Buscador e Inventario de Productos")
 tab1, tab2, tab3 = st.tabs(["🔎 Consultar / Buscar", "➕ Alta Manual", "⚡ Herramientas & Scripts"])
 
+# DIÁLOGO DE EDICIÓN EN MODAL
+@st.dialog("✏️ Editar Producto Completo", width="large")
+def modal_editar_completo(mod_p, pdata):
+    st.caption(f"Gestión y edición del modelo: **{mod_p}**")
+    
+    # Opción para cambiar foto
+    with st.expander("🖼️ Cambiar / Subir Foto de Portada"):
+        nueva_foto = st.file_uploader("Selecciona una imagen (.jpg, .png)", type=["jpg", "jpeg", "png", "webp"], key=f"uploader_{mod_p}")
+        if nueva_foto is not None:
+            if st.button("🚀 Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
+                with st.spinner("Subiendo imagen..."):
+                    try:
+                        bytes_img = nueva_foto.read()
+                        nombre_remoto = f"{mod_p}.jpg"
+                        supabase.storage.from_("imagenes").upload(
+                            path=nombre_remoto,
+                            file=bytes_img,
+                            file_options={"content-type": "image/jpeg", "upsert": "true"}
+                        )
+                        sb_url = st.secrets.get("SUPABASE_URL", "")
+                        url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
+                        supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
+                        st.success("✅ ¡Foto actualizada!")
+                        st.rerun()
+                    except Exception as ex_foto:
+                        st.error(f"❌ Error: {ex_foto}")
+
+    # Opción para eliminar
+    with st.expander("⚠️ Zona de Peligro: Eliminar Producto"):
+        st.warning("Esta acción borrará el producto permanentemente de Supabase.")
+        confirm_del = st.checkbox("Confirmo que deseo eliminarlo", key=f"check_del_{mod_p}")
+        if confirm_del:
+            if st.button("🗑️ Eliminar Producto Definitivamente", type="primary", use_container_width=True, key=f"btn_confirm_del_{mod_p}"):
+                with st.spinner("Eliminando..."):
+                    try:
+                        supabase.table("productos").delete().eq("MODELO", mod_p).execute()
+                        st.success(f"Producto {mod_p} eliminado.")
+                        st.rerun()
+                    except Exception as ex_del:
+                        st.error(f"❌ Error al eliminar: {ex_del}")
+
+    st.divider()
+    render_formulario_producto(pdata, modelo_existente=mod_p)
+
 # TAB 1: BÚSQUEDA
 with tab1:
     busqueda_raw = st.text_input("Buscar por Modelo:", key="search_bar")
