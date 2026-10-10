@@ -148,6 +148,17 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     prefix = f"edit_{modelo_existente}" if is_edit else "nuevo_prod"
     siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
     
+    # --- SECCIÓN FOTO DE PORTADA EN ALTA / EDICIÓN ---
+    st.header("🖼️ FOTO DE PORTADA")
+    nueva_foto_manual = st.file_uploader(
+        "Subir / Asignar foto de portada (.jpg, .png)", 
+        type=["jpg", "jpeg", "png", "webp"], 
+        key=f"{prefix}_uploader_foto"
+    )
+    if nueva_foto_manual:
+        st.image(nueva_foto_manual, caption="Vista previa de la portada a subir", width=250)
+    
+    st.divider()
     st.header("📦 1. SECCIÓN PRODUCTO")
     col1, col2 = st.columns(2)
     with col1:
@@ -398,6 +409,20 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
             st.error("❌ El campo MODELO es obligatorio.")
             return
 
+        # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
+        if nueva_foto_manual is not None:
+            with st.spinner("Subiendo foto de portada a Supabase Storage..."):
+                try:
+                    bytes_img = nueva_foto_manual.read()
+                    nombre_remoto = f"{modelo}.jpg"
+                    supabase.storage.from_("imagenes").upload(
+                        path=nombre_remoto,
+                        file=bytes_img,
+                        file_options={"content-type": "image/jpeg", "upsert": "true"}
+                    )
+                except Exception as ex_foto:
+                    st.warning(f"⚠️ Nota sobre foto: {ex_foto}")
+
         datos_guardar = {
             "MODELO": modelo, "NOMBRE": nombre, "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
             "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
@@ -430,60 +455,11 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                 res = guardar_producto_db(modelo, datos_guardar)
                 if res.data:
                     st.balloons()
-                    st.success(f"🎉 ¡Producto '{modelo}' guardado correctamente en Supabase!")
+                    st.success(f"🎉 ¡Producto '{modelo}' guardado correctamente con su foto!")
                 else:
                     st.warning("⚠️ Producto enviado, pero verifica si apareció en el listado.")
             except Exception as ex:
                 st.error(f"❌ Error al guardar en Supabase: {ex}")
-
-
-# DIÁLOGO DE EDICIÓN EN MODAL@st.dialog("✏️ Editar Producto Completo", width="large")
-def modal_editar_completo(mod_p, pdata):
-    st.caption(f"Gestión y edición del modelo: **{mod_p}**")
-    
-    # --- SECCIÓN DE ACCIONES RÁPIDAS (FOTO Y ELIMINACIÓN) ---
-    col_foto, col_del = st.columns(2)
-    
-    with col_foto:
-        with st.expander("🖼️ Cambiar / Subir Foto de Portada"):
-            nueva_foto = st.file_uploader("Selecciona una imagen (.jpg, .png)", type=["jpg", "jpeg", "png", "webp"], key=f"uploader_{mod_p}")
-            if nueva_foto is not None:
-                if st.button("🚀 Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
-                    with st.spinner("Subiendo imagen a Supabase Storage..."):
-                        try:
-                            bytes_img = nueva_foto.read()
-                            nombre_remoto = f"{mod_p}.jpg"
-                            
-                            # Subir al bucket 'imagenes'
-                            supabase.storage.from_("imagenes").upload(
-                                path=nombre_remoto,
-                                file=bytes_img,
-                                file_options={"content-type": "image/jpeg", "upsert": "true"}
-                            )
-                            
-                            # Actualizar URL pública en la tabla de Supabase
-                            sb_url = st.secrets.get("SUPABASE_URL", "")
-                            url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
-                            supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
-                            
-                            st.success("✅ ¡Foto de portada actualizada!")
-                            st.rerun()
-                        except Exception as ex_foto:
-                            st.error(f"❌ Error al subir la imagen: {ex_foto}")
-
-    with col_del:
-        with st.expander("⚠️ Zona de Peligro: Eliminar Producto"):
-            st.warning("Esta acción borrará el producto permanentemente de Supabase.")
-            confirm_del = st.checkbox("Confirmo que deseo eliminarlo", key=f"check_del_{mod_p}")
-            if confirm_del:
-                if st.button("🗑️ Eliminar Producto Definitivamente", type="primary", use_container_width=True, key=f"btn_confirm_del_{mod_p}"):
-                    with st.spinner("Eliminando producto..."):
-                        try:
-                            supabase.table("productos").delete().eq("MODELO", mod_p).execute()
-                            st.success(f"Producto {mod_p} eliminado.")
-                            st.rerun()
-                        except Exception as ex_del:
-                            st.error(f"❌ Error al eliminar: {ex_del}")
 
     st.divider()
     
