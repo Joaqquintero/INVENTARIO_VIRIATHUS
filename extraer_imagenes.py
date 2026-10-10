@@ -1,104 +1,143 @@
 import os
 import glob
+import re
+import io
+import warnings
 import pandas as pd
-import sqlite3
+import toml
 from openpyxl import load_workbook
 from PIL import Image
-import io
+from supabase import create_client
+
+warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
+def cargar_secrets():
+    path_secrets = os.path.join(".streamlit", "secrets.toml")
+    if os.path.exists(path_secrets):
+        secrets = toml.load(path_secrets)
+        return secrets.get("SUPABASE_URL"), secrets.get("SUPABASE_KEY")
+    else:
+        print("⚠️ No se encontró .streamlit/secrets.toml.")
+        return None, None
+
+def encontrar_encabezado_y_leer(archivo):
+    palabras_clave = ["MODELO", "MODEL", "MOD", "CODIGO", "COD", "N°", "NO.", "ARTICULO"]
+    for h in range(100):
+        try:
+            df = pd.read_excel(archivo, header=h)
+            for col in df.columns:
+                col_clean = re.sub(r"[^\w\s]", "", str(col)).replace("\n", " ").strip().upper()
+                for pk in palabras_clave:
+                    if pk in col_clean.split() or col_clean.startswith(pk):
+                        return df, col, h
+        except Exception:
+            continue
+    return None, None, None
 
 def extraer_y_vincular_imagenes():
+    url, key = cargar_secrets()
+    if not url or not key:
+        print("❌ Error: Faltan SUPABASE_URL o SUPABASE_KEY en secrets.toml")
+        return
+
+    supabase = create_client(url, key)
     carpeta_excel = "inventarios_excel"
     carpeta_img = "imagenes"
     
-    # Crear carpeta 'imagenes' si no existe
     os.makedirs(carpeta_img, exist_ok=True)
     
     archivos = glob.glob(os.path.join(carpeta_excel, "*.xlsx"))
     if not archivos:
-        print("⚠️ No se encontraron archivos Excel en la carpeta.")
+        print(f"⚠️ No se encontraron archivos Excel en '{carpeta_excel}'.")
         return
 
-    print("🖼️ Extrayendo imágenes de los archivos Excel...\n")
+    print(f"🖼️ Extrayendo imágenes de {len(archivos)} archivo(s) Excel...\n")
     
     mapa_imagenes = {}
     total_imagenes = 0
 
-    for archivo in archivos:
+    for i, archivo in enumerate(archivos, 1):
         nombre_excel = os.path.basename(archivo)
-        print(f"Procesando: {nombre_excel}...", end=" ", flush=True)
+        print(f"[{i}/{len(archivos)}] Procesando: {nombre_excel}...", end=" ", flush=True)
         
         try:
-            # 1. Cargar el Excel con openpyxl para acceder a las imágenes flotantes
+            df, col_modelo, header_row = encontrar_encabezado_y_leer(archivo)
+            
+            if df is None or not col_modelo or header_row is None:
+                print("-> ⚠️ Omitido (no se halló la columna MODELO)")
+                continue
+
+            df[col_modelo] = df[col_modelo].ffill()
+
             wb = load_workbook(archivo, data_only=True)
             sheet = wb.active
             
-            # 2. Leer los datos con pandas para mapear filas a la columna MODELO
-            df = pd.read_excel(archivo, header=5)
-            col_modelo = next((c for c in df.columns if str(c).strip().upper() == 'MODELO'), None)
-            
-            if not col_modelo:
-                print("⚠️ Omitido (no se halló la columna MODELO)")
-                continue
-                
             count_archivo = 0
             
-            # 3. Recorrer cada imagen encontrada en la hoja
-            for img in sheet._images:
-                # Fila de la celda donde está anclada la imagen
-                row = img.anchor._from.row  
-                
-                # Ajuste de índice por los encabezados (header=5 toma la fila 6)
-                idx_df = row - 6
-                
-                if 0 <= idx_df < len(df):
-                    modelo_val = str(df.iloc[idx_df][col_modelo]).replace('.0', '').strip()
-                    
-                    if modelo_val and modelo_val.lower() not in ['none', 'nan', '']:
-                        # Extraer los bytes de la imagen
-                        image_data = img._data()
-                        image = Image.open(io.BytesIO(image_data))
+            if hasattr(sheet, '_images') and sheet._images:
+                for img in sheet._images:
+                    try:
+                        row_excel = img.anchor._from.row + 1
+                        idx_df = row_excel - (header_row + 2)
                         
-                        # Convertir a RGB (por si viene en transparente PNG)
-                        if image.mode in ("RGBA", "P"):
-                            image = image.convert("RGB")
-                            
-                        # Guardar la imagen nombrada como el modelo
-                        nombre_foto = f"{modelo_val}.jpg"
-                        ruta_guardado = os.path.join(carpeta_img, nombre_foto)
+                        if 0 <= idx_df < len(df):
+                            raw_mod = str(df.iloc[idx_df][col_modelo]).strip()
+                            if raw_mod and raw_mod.lower() not in ['none', 'nan', '', 'modelo']:
+                                modelo_val = raw_mod.split(".")[0].strip() if raw_mod.replace(".", "").isdigit() else raw_mod
+                                
+                                image_data = img._data()
+                                image = Image.open(io.BytesIO(image_data))
+                                
+                                if image.mode in ("RGBA", "P"):
+                                    image = image.convert("RGB")
+                                    
+                                nombre_foto = f"{modelo_val}.jpg"
+                                ruta_guardado = os.path.join(carpeta_img, nombre_foto)
+                                
+                                # Si ya existe la foto guardada, evitamos reescribirla en disco
+                                if not os.path.exists(ruta_guardado):
+                                    image.save(ruta_guardado, "JPEG", quality=85)
+                                
+                                ruta_normalizada = ruta_guardado.replace("\\", "/")
+                                mapa_imagenes[modelo_val] = ruta_normalizada
+                                count_archivo += 1
+                                total_imagenes += 1
+                    except Exception:
+                        continue
                         
-                        image.save(ruta_guardado, "JPEG", quality=85)
-                        mapa_imagenes[modelo_val] = ruta_guardado
-                        count_archivo += 1
-                        total_imagenes += 1
-                        
-            print(f"-> ✅ ({count_archivo} fotos extraídas)")
+            print(f"-> ✅ ({count_archivo} fotos listas)")
 
         except Exception as e:
             print(f"-> ❌ Error al leer imágenes: {e}")
 
-    print(f"\n📸 Proceso de imágenes finalizado: {total_imagenes} foto(s) guardada(s) en '{carpeta_img}/'.")
+    print(f"\n📸 Total de imágenes detectadas: {len(mapa_imagenes)} foto(s).")
 
-    # 4. Actualizar la base de datos SQLite vinculando las rutas de las fotos
-    if mapa_imagenes and os.path.exists("inventario.db"):
-        print("\n🔄 Vinculando fotos con la base de datos 'inventario.db'...")
-        conn = sqlite3.connect("inventario.db")
-        cursor = conn.cursor()
+    # ACTUALIZACIÓN RÁPIDA POR LOTES (BATCH UPSERT)
+    if mapa_imagenes:
+        print("\n🚀 Sincronizando rutas de fotos con Supabase en lotes de alto rendimiento...")
         
-        # Crear la columna RUTA_IMAGEN si no existe
-        try:
-            cursor.execute("ALTER TABLE productos ADD COLUMN RUTA_IMAGEN TEXT;")
-        except sqlite3.OperationalError:
-            pass  # Ya existía la columna
-            
-        # Asignar la ruta a cada modelo
-        registros_actualizados = 0
+        # Convertir mapa de imágenes a lista de payloads
+        items_a_actualizar = []
         for modelo, ruta in mapa_imagenes.items():
-            cursor.execute("UPDATE productos SET RUTA_IMAGEN = ? WHERE MODELO = ?", (ruta, modelo))
-            registros_actualizados += cursor.rowcount
-            
-        conn.commit()
-        conn.close()
-        print(f"🎉 Se vincularon {registros_actualizados} productos con su foto en la base de datos.")
+            items_a_actualizar.append({
+                "MODELO": modelo,
+                "RUTA_IMAGEN": ruta
+            })
+
+        lote_size = 200
+        total_sincronizados = 0
+        
+        for i in range(0, len(items_a_actualizar), lote_size):
+            lote = items_a_actualizar[i:i + lote_size]
+            try:
+                # Usar upsert para actualizar RUTA_IMAGEN en bloque
+                supabase.table("productos").upsert(lote, on_conflict="MODELO").execute()
+                total_sincronizados += len(lote)
+                print(f"  • Sincronizadas {total_sincronizados} / {len(items_a_actualizar)} fotos...", end="\r")
+            except Exception as ex_db:
+                print(f"\n❌ Error en lote: {ex_db}")
+
+        print(f"\n🎉 ¡Sincronización masiva de fotos completada con éxito ({total_sincronizados} productos actualizados)!")
 
 if __name__ == "__main__":
     extraer_y_vincular_imagenes()

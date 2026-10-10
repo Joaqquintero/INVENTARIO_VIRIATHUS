@@ -1,0 +1,7 @@
+.streamlit/secrets.toml
+
+inventario.db
+imagenes/
+inventarios_excel/
+__pycache__/
+*.pyc
