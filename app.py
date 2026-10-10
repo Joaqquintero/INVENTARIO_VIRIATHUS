@@ -434,7 +434,7 @@ tab1, tab2, tab3 = st.tabs(["🔎 Consultar / Buscar", "➕ Alta Manual", "⚡ H
 
 # TAB 1: BÚSQUEDA
 with tab1:
-    busqueda_raw = st.text_input("Buscar por Modelo, Nombre, Categoría o Descripción:", key="search_bar")
+    busqueda_raw = st.text_input("Buscar por Modelo:", key="search_bar")
     busqueda = busqueda_raw.strip()
     
     if busqueda:
@@ -448,11 +448,12 @@ with tab1:
         hasta = desde + tamano_pagina - 1
 
         with st.spinner("Consultando inventario..."):
-            busqueda_clean = busqueda.split(".")[0] if busqueda.replace(".", "").isdigit() else busqueda
+            # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
+            busqueda_clean = re.sub(r'[%"\']', '', busqueda)
             
-            # Búsqueda segura y compatible con Supabase PostgREST
+            # Consulta limpia directamente a la columna MODELO
             query = supabase.table("productos").select("*", count="exact")
-            query = query.or_(f"MODELO.ilike.%{busqueda}%,MODELO.ilike.%{busqueda_clean}%")
+            query = query.ilike("MODELO", f"%{busqueda_clean}%")
             
             resp = query.range(desde, hasta).execute()
             productos = resp.data
