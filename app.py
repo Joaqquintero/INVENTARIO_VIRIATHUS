@@ -449,8 +449,10 @@ with tab1:
 
         with st.spinner("Consultando inventario..."):
             busqueda_clean = busqueda.split(".")[0] if busqueda.replace(".", "").isdigit() else busqueda
+            
+            # Búsqueda segura y compatible con Supabase PostgREST
             query = supabase.table("productos").select("*", count="exact")
-            query = query.or_(f"MODELO.ilike.%{busqueda}%,MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda}%")
+            query = query.or_(f"MODELO.ilike.%{busqueda}%,MODELO.ilike.%{busqueda_clean}%")
             
             resp = query.range(desde, hasta).execute()
             productos = resp.data
@@ -462,7 +464,7 @@ with tab1:
             col_info, col_pag = st.columns([2, 1])
             with col_info:
                 st.subheader(f"Resultados para \"{busqueda}\" ({total_coincidencias} encontrados):")
-                st.caption(f"Mostrando productos **{desde + 1}** a **{min(hasta + 1, total_coincidencias)}** (Página {pagina + 1} de {total_paginas})")
+                st.caption(f"Mostrando productos *{desde + 1}* a *{min(hasta + 1, total_coincidencias)}* (Página {pagina + 1} de {total_paginas})")
             
             with col_pag:
                 c_prev, c_next = st.columns(2)
@@ -503,17 +505,17 @@ with tab1:
                         else:
                             st.caption("🖼️ Sin imagen asignada")
                         
-                        st.markdown(f"### **{mod_p}**")
-                        st.write(f"**{pdata.get('NOMBRE', 'Sin Nombre')}**")
+                        st.markdown(f"### *{mod_p}*")
+                        st.write(f"*{pdata.get('NOMBRE', 'Sin Nombre')}*")
                         
                         if is_vendido:
                             st.error("🔴 Estado: VENDIDO")
                         else:
                             st.success("🟢 Estado: DISPONIBLE")
                             
-                        st.write(f"📍 **Ubicación:** {pdata.get('UBICACION', 'N/A')}")
-                        st.write(f"🏷️ **Categoría:** {pdata.get('CATEGORIA', 'N/A')}")
-                        st.write(f"💵 **Redondeo Showroom:** ${to_float(pdata.get('REDONDEO_SHOWROOM', 0)):,.2f}")
+                        st.write(f"📍 *Ubicación:* {pdata.get('UBICACION', 'N/A')}")
+                        st.write(f"🏷️ *Categoría:* {pdata.get('CATEGORIA', 'N/A')}")
+                        st.write(f"💵 *Redondeo Showroom:* ${to_float(pdata.get('REDONDEO_SHOWROOM', 0)):,.2f}")
                         
                         url_drive = f"https://drive.google.com/drive/folders/{ID_MASTER_FOTOS}?q={mod_p}"
                         st.link_button("📂 Fotos en Google Drive", url_drive, use_container_width=True, key=f"drive_btn_{mod_p}_{idx}")
@@ -540,7 +542,7 @@ with tab1:
             st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
     else:
         st.info("💡 Escribe un modelo o palabra clave para buscar productos.")
-
+        
 # TAB 2: ALTA MANUAL
 with tab2:
     if user["role"] in ["Administrador", "Inventario"]:
