@@ -123,24 +123,40 @@ def ejecutar_script_python(nombre_script):
         st.error(f"Error al intentar llamar a {nombre_script}: {e}")
 
 # --- FORMULARIO PRINCIPAL ESTRUCTURADO ---
+
+def guardar_producto_db(modelo_key, datos_dict):
+    """Guarda o actualiza el producto correctamente en Supabase."""
+    url_img_default = f"{SUPABASE_URL}/storage/v1/object/public/imagenes/{modelo_key}.jpg"
+    
+    payload_json = json.dumps(datos_dict, ensure_ascii=False)
+    
+    registro_db = {
+        "MODELO": str(modelo_key).strip(),
+        "RUTA_IMAGEN": url_img_default,
+        "datos_json": payload_json
+    }
+    
+    res = supabase.table("productos").upsert(registro_db, on_conflict="MODELO").execute()
+    return res
+
 def render_formulario_producto(datos_previos={}, modelo_existente=None):
     is_edit = modelo_existente is not None
     prefix = f"edit_{modelo_existente}" if is_edit else "nuevo_prod"
-    siguiente_modelo = obtener_siguiente_modelo() if not is_edit else ""
+    siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
     
     st.header("📦 1. SECCIÓN PRODUCTO")
     col1, col2 = st.columns(2)
     with col1:
         if is_edit:
-            modelo = st.text_input("MODELO", value=modelo_existente, disabled=True, key=f"{prefix}_modelo")
+            modelo = st.text_input("MODELO", value=str(modelo_existente), disabled=True, key=f"{prefix}_modelo")
         else:
-            modelo = st.text_input("MODELO *", value=datos_previos.get("MODELO", siguiente_modelo), key=f"{prefix}_modelo")
+            modelo = st.text_input("MODELO *", value=str(datos_previos.get("MODELO", siguiente_modelo)), key=f"{prefix}_modelo").strip()
             
-        nombre = st.text_input("NOMBRE", value=datos_previos.get("NOMBRE", ""), key=f"{prefix}_nombre")
+        nombre = st.text_input("NOMBRE", value=str(datos_previos.get("NOMBRE", "")), key=f"{prefix}_nombre")
         st.caption(f"📏 CARACTERES DEL NOMBRE: **{len(nombre)}**")
         
-        descripcion = st.text_area("DESCRIPCIÓN / FICHA TÉCNICA", value=datos_previos.get("DESCRIPCION", ""), height=100, key=f"{prefix}_desc")
-        cedula = st.text_area("CÉDULA CURATORIAL", value=datos_previos.get("CEDULA_CURATORIAL", ""), height=100, key=f"{prefix}_cedula")
+        descripcion = st.text_area("DESCRIPCIÓN / FICHA TÉCNICA", value=str(datos_previos.get("DESCRIPCION", "")), height=100, key=f"{prefix}_desc")
+        cedula = st.text_area("CÉDULA CURATORIAL", value=str(datos_previos.get("CEDULA_CURATORIAL", "")), height=100, key=f"{prefix}_cedula")
         st.caption(f"📏 CARACTERES CÉDULA CURATORIAL: **{len(cedula)}**")
 
     with col2:
@@ -155,39 +171,41 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
             peso = st.text_input("PESO (kg)", value=str(datos_previos.get("PESO", "")), key=f"{prefix}_peso")
 
         disp_opts = ["Disponible (vacío)", "v - VENDIDO"]
-        disp_idx = 1 if datos_previos.get("DISPONIBILIDAD") == "v" else 0
+        disp_idx = 1 if str(datos_previos.get("DISPONIBILIDAD", "")).lower() == "v" or str(datos_previos.get("DISP", "")).lower() == "v" else 0
         disp_sel = st.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp")
         disponibilidad = "v" if "VENDIDO" in disp_sel else ""
 
         ubicacion_opts = ["1 - Showroom", "2 - Santa Fe", "3 - Antara", "4 - Lilly", "5 - Bodega"]
         ubic_idx = 0
+        val_u_prev = str(datos_previos.get("UBICACION", ""))
         for i, u in enumerate(ubicacion_opts):
-            if datos_previos.get("UBICACION") == u:
+            if val_u_prev == u or val_u_prev.startswith(u[0]):
                 ubic_idx = i
         ubicacion = st.selectbox("UBICACIÓN", ubicacion_opts, index=ubic_idx, key=f"{prefix}_ubic")
 
         categoria_opts = ["1 - Muebles", "2 - Objetos", "3 - Libros", "4 - Arte", "5 - Grafica"]
         cat_idx = 0
+        val_c_prev = str(datos_previos.get("CATEGORIA", ""))
         for i, c in enumerate(categoria_opts):
-            if datos_previos.get("CATEGORIA") == c:
+            if val_c_prev == c or val_c_prev.startswith(c[0]):
                 cat_idx = i
         categoria = st.selectbox("CATEGORÍA", categoria_opts, index=cat_idx, key=f"{prefix}_cat")
 
-        subcategoria = st.text_input("SUBCATEGORÍA", value=datos_previos.get("SUBCATEGORÍA", ""), key=f"{prefix}_subcat")
-        etiquetas = st.text_input("ETIQUETAS", value=datos_previos.get("ETIQUETAS", ""), key=f"{prefix}_etiq")
+        subcategoria = st.text_input("SUBCATEGORÍA", value=str(datos_previos.get("SUBCATEGORÍA", "")), key=f"{prefix}_subcat")
+        etiquetas = st.text_input("ETIQUETAS", value=str(datos_previos.get("ETIQUETAS", "")), key=f"{prefix}_etiq")
 
     st.divider()
     st.header("🛒 2. SECCIÓN VENTA")
     cv1, cv2, cv3 = st.columns(3)
     with cv1:
-        num_pedido = st.text_input("NÚMERO DE PEDIDO", value=datos_previos.get("NUMERO_PEDIDO", ""), key=f"{prefix}_npedido")
-        fecha_pedido = st.text_input("FECHA DEL PEDIDO", value=datos_previos.get("FECHA_PEDIDO", ""), placeholder="10/oct/26", key=f"{prefix}_fpedido")
+        num_pedido = st.text_input("NÚMERO DE PEDIDO", value=str(datos_previos.get("NUMERO_PEDIDO", "")), key=f"{prefix}_npedido")
+        fecha_pedido = st.text_input("FECHA DEL PEDIDO", value=str(datos_previos.get("FECHA_PEDIDO", "")), placeholder="10/oct/26", key=f"{prefix}_fpedido")
     with cv2:
-        vendedor = st.text_input("VENDEDOR", value=datos_previos.get("VENDEDOR", ""), key=f"{prefix}_vendedor")
-        factura = st.text_input("FACTURA", value=datos_previos.get("FACTURA", ""), key=f"{prefix}_factura")
+        vendedor = st.text_input("VENDEDOR", value=str(datos_previos.get("VENDEDOR", "")), key=f"{prefix}_vendedor")
+        factura = st.text_input("FACTURA", value=str(datos_previos.get("FACTURA", "")), key=f"{prefix}_factura")
     with cv3:
-        fecha_factura = st.text_input("FECHA FACTURA", value=datos_previos.get("FECHA_FACTURA", ""), placeholder="10/oct/26", key=f"{prefix}_ffactura")
-        status_pago_entrega = st.text_input("STATUS DE PAGO Y/O ENTREGA", value=datos_previos.get("STATUS_PAGO_ENTREGA", ""), key=f"{prefix}_status")
+        fecha_factura = st.text_input("FECHA FACTURA", value=str(datos_previos.get("FECHA_FACTURA", "")), placeholder="10/oct/26", key=f"{prefix}_ffactura")
+        status_pago_entrega = st.text_input("STATUS DE PAGO Y/O ENTREGA", value=str(datos_previos.get("STATUS_PAGO_ENTREGA", "")), key=f"{prefix}_status")
 
     st.divider()
     st.header("🏷️ 3. SECCIÓN COMPRA")
@@ -197,25 +215,25 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     st.subheader("Datos de Compra")
     cc1, cc2, cc3 = st.columns(3)
     with cc1:
-        prov_compra = st.text_input("PROVEEDOR DE COMPRA", value=datos_previos.get("PROVEEDOR_COMPRA", ""), key=f"{prefix}_provcompra")
+        prov_compra = st.text_input("PROVEEDOR DE COMPRA", value=str(datos_previos.get("PROVEEDOR_COMPRA", "")), key=f"{prefix}_provcompra")
         forma_pago_compra = st.selectbox("FORMA DE PAGO A COMPRA", pago_opts, key=f"{prefix}_fp_compra")
-        fecha_adquisicion_compra = st.text_input("FECHA ADQUISICIÓN", value=datos_previos.get("FECHA_ADQUISICION", ""), placeholder="10/oct/26", key=f"{prefix}_fadq_compra")
+        fecha_adquisicion_compra = st.text_input("FECHA ADQUISICIÓN", value=str(datos_previos.get("FECHA_ADQUISICION", "")), placeholder="10/oct/26", key=f"{prefix}_fadq_compra")
     with cc2:
         quien_pago_compra = st.selectbox("QUIÉN PAGÓ (COMPRA)", pago_quien_opts, key=f"{prefix}_qp_compra")
-        fecha_pago_compra = st.text_input("FECHA DE PAGO COMPRA", value=datos_previos.get("FECHA_PAGO_COMPRA", ""), placeholder="10/oct/26", key=f"{prefix}_fpagocompra")
+        fecha_pago_compra = st.text_input("FECHA DE PAGO COMPRA", value=str(datos_previos.get("FECHA_PAGO_COMPRA", "")), placeholder="10/oct/26", key=f"{prefix}_fpagocompra")
     with cc3:
-        notas_pago_compra = st.text_input("NOTAS FORMA PAGO COMPRA", value=datos_previos.get("NOTAS_FORMA_PAGO_COMPRA", ""), key=f"{prefix}_notaspagocompra")
-        requerimientos = st.text_input("REQUERIMIENTOS", value=datos_previos.get("REQUERIMIENTOS", ""), key=f"{prefix}_req")
+        notas_pago_compra = st.text_input("NOTAS FORMA PAGO COMPRA", value=str(datos_previos.get("NOTAS_FORMA_PAGO_COMPRA", "")), key=f"{prefix}_notaspagocompra")
+        requerimientos = st.text_input("REQUERIMIENTOS", value=str(datos_previos.get("REQUERIMIENTOS", "")), key=f"{prefix}_req")
 
     st.subheader("Datos de Restauro")
     lista_restauradores = datos_previos.get("RESTAURADORES", [])
     if not lista_restauradores:
         lista_restauradores = [{
-            "prov": datos_previos.get("PROVEEDOR_RESTAURO", ""),
-            "fp": datos_previos.get("FORMA_PAGO_RESTAURO", "1 - EFECTIVO"),
-            "qp": datos_previos.get("QUIEN_PAGO_RESTAURO", "1 - CAJA"),
-            "fecha": datos_previos.get("FECHA_PAGO_RESTAURO", ""),
-            "notas": datos_previos.get("NOTAS_FORMA_PAGO_RESTAURO", "")
+            "prov": str(datos_previos.get("PROVEEDOR_RESTAURO", "")),
+            "fp": str(datos_previos.get("FORMA_PAGO_RESTAURO", "1 - EFECTIVO")),
+            "qp": str(datos_previos.get("QUIEN_PAGO_RESTAURO", "1 - CAJA")),
+            "fecha": str(datos_previos.get("FECHA_PAGO_RESTAURO", "")),
+            "notas": str(datos_previos.get("NOTAS_FORMA_PAGO_RESTAURO", ""))
         }]
 
     num_rest_key = f"num_rest_{prefix}"
@@ -228,13 +246,13 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.markdown(f"**Restaurador #{idx_r + 1}**")
         cr1, cr2, cr3 = st.columns(3)
         with cr1:
-            p_rest = st.text_input(f"PROVEEDOR DE RESTAURO #{idx_r + 1}", value=d_r.get("prov", ""), key=f"{prefix}_pr_{idx_r}")
-            fp_rest = st.selectbox(f"FORMA DE PAGO RESTAURO #{idx_r + 1}", pago_opts, index=0 if "EFECTIVO" in d_r.get("fp", "") else 1, key=f"{prefix}_fpr_{idx_r}")
+            p_rest = st.text_input(f"PROVEEDOR DE RESTAURO #{idx_r + 1}", value=str(d_r.get("prov", "")), key=f"{prefix}_pr_{idx_r}")
+            fp_rest = st.selectbox(f"FORMA DE PAGO RESTAURO #{idx_r + 1}", pago_opts, index=0 if "EFECTIVO" in str(d_r.get("fp", "")) else 1, key=f"{prefix}_fpr_{idx_r}")
         with cr2:
             qp_rest = st.selectbox(f"QUIÉN PAGÓ (RESTAURO) #{idx_r + 1}", pago_quien_opts, key=f"{prefix}_qpr_{idx_r}")
-            f_rest = st.text_input(f"FECHA DE PAGO RESTAURO #{idx_r + 1}", value=d_r.get("fecha", ""), placeholder="10/oct/26", key=f"{prefix}_fpr_fecha_{idx_r}")
+            f_rest = st.text_input(f"FECHA DE PAGO RESTAURO #{idx_r + 1}", value=str(d_r.get("fecha", "")), placeholder="10/oct/26", key=f"{prefix}_fpr_fecha_{idx_r}")
         with cr3:
-            n_rest = st.text_input(f"NOTAS FORMA PAGO RESTAURO #{idx_r + 1}", value=d_r.get("notas", ""), key=f"{prefix}_npr_{idx_r}")
+            n_rest = st.text_input(f"NOTAS FORMA PAGO RESTAURO #{idx_r + 1}", value=str(d_r.get("notas", "")), key=f"{prefix}_npr_{idx_r}")
 
         restauradores_capturados.append({
             "prov": p_rest, "fp": fp_rest, "qp": qp_rest, "fecha": f_rest, "notas": n_rest
@@ -247,7 +265,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     st.divider()
     st.header("💵 4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
 
-    # ENTRADA DE COSTOS DIRECTOS
     st.subheader("📥 Registro de Costos Base")
     col_c1, col_c2, col_c3, col_c4 = st.columns(4)
     with col_c1:
@@ -263,7 +280,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         v_aportacion_gastos = st.text_input("APORTACION GASTOS ($)", value=str(datos_previos.get("APORTACION_GASTOS", "")), key=f"{prefix}_c_aport")
         v_factor_vir = st.text_input("FACTOR VIRIATHUS", value=str(datos_previos.get("FACTOR_VIRIATHUS", "1.4")), key=f"{prefix}_factor_vir")
 
-    # CONVERSIÓN A FLOAT
     c_adq = to_float(v_costo_adq)
     c_fin = to_float(v_costo_fin)
     c_rest = to_float(v_costo_rest)
@@ -283,7 +299,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     st.divider()
     col_show, col_cp = st.columns(2)
 
-    # --- COLUMNA SHOWROOM & VIRIATHUS ---
     with col_show:
         st.subheader("🏛️ SHOWROOM / VIRIATHUS")
         v_utilidad_sh = st.text_input("UTILIDAD SHOWROOM ($)", value=str(datos_previos.get("UTILIDAD_SHOWROOM", "")), key=f"{prefix}_util_sh")
@@ -319,7 +334,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA + IVA*")
         precio_sh_con_iva = to_float(v_ps_con_iva, calc_ps_con_iva)
 
-        sug_red_sh = aplicar_regla_redondeo(precio_sh_con_iva)
+        sug_red_sh = aplicar_regla_redondeo(precio_sh_con_iva) if 'aplicar_regla_redondeo' in globals() else precio_sh_con_iva
         v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", f"{sug_red_sh:.2f}")), key=f"{prefix}_red_sh")
         st.caption("ℹ️ *Automático: Redondeado según regla (<500 entero, >500 en 50/00, >10000 en 00)*")
         redondeo_sh = to_float(v_red_sh, sug_red_sh)
@@ -340,7 +355,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         v_uvc = st.text_input("UTILIDAD VIRIATHUS CON COMISION DE INTERIORISTA ($)", value=str(datos_previos.get("UTILIDAD_VIRIATHUS_CON_COMISION", f"{calc_uvc:.2f}")), key=f"{prefix}_uvc")
         st.caption("ℹ️ *Automático: COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA*")
 
-    # --- COLUMNA CASA PALACIO & C/P ---
     with col_cp:
         st.subheader("🏰 CASA PALACIO / C/P")
         calc_pvcp_iva = (ptv_sin_iva / 0.65) * 1.16 if ptv_sin_iva > 0 else 0.0
@@ -348,7 +362,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.caption("ℹ️ *Automático: PRECIO TOTAL VIRIATHUS SIN IVA / 0.65 * 1.16*")
         pvcp_iva = to_float(v_pvcp_iva, calc_pvcp_iva)
 
-        sug_pvcp_red = aplicar_regla_redondeo(pvcp_iva)
+        sug_pvcp_red = aplicar_regla_redondeo(pvcp_iva) if 'aplicar_regla_redondeo' in globals() else pvcp_iva
         v_pvcp_red = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO ($)", value=str(datos_previos.get("CP_PRECIO_REDONDEADO", f"{sug_pvcp_red:.2f}")), key=f"{prefix}_pvcp_red")
         st.caption("ℹ️ *Automático: Redondeado según regla (<500 entero, >500 en 50/00, >10000 en 00)*")
         pvcp_red = to_float(v_pvcp_red, sug_pvcp_red)
@@ -377,7 +391,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     st.divider()
     if st.button("🚀 Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
         if not modelo:
-            st.error("El campo MODELO es obligatorio.")
+            st.error("❌ El campo MODELO es obligatorio.")
             return
 
         datos_guardar = {
@@ -408,10 +422,16 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         }
 
         with st.spinner("Guardando en la base de datos..."):
-            guardar_producto_db(modelo, datos_guardar)
-            
-        st.success(f"¡Producto '{modelo}' guardado correctamente!")
-        st.rerun()
+            try:
+                res = guardar_producto_db(modelo, datos_guardar)
+                if res.data:
+                    st.balloons()
+                    st.success(f"🎉 ¡Producto '{modelo}' guardado correctamente en Supabase!")
+                else:
+                    st.warning("⚠️ Producto enviado, pero verifica si apareció en el listado.")
+            except Exception as ex:
+                st.error(f"❌ Error al guardar en Supabase: {ex}")
+
 
 # DIÁLOGO DE EDICIÓN EN MODAL
 @st.dialog("✏️ Editar Producto Completo", width="large")
@@ -546,110 +566,11 @@ with tab1:
             st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
     else:
         st.info("💡 Escribe un modelo o palabra clave para buscar productos.")
-
+        
 # TAB 2: ALTA MANUAL
 with tab2:
     if user["role"] in ["Administrador", "Inventario"]:
-        st.header("➕ Alta Manual de Producto")
-        st.caption("Llena los campos para dar de alta un producto individual en Supabase.")
-
-        col1, col2 = st.columns(2)
-        with col1:
-            modelo_nuevo = st.text_input("Modelo / Código (*Requerido)", key="alta_modelo").strip()
-            nombre_nuevo = st.text_input("Nombre del Producto", key="alta_nombre")
-            cat_nueva = st.text_input("Categoría", key="alta_cat")
-            ubi_nueva = st.text_input("Ubicación", key="alta_ubi")
-            disp_nueva = st.selectbox("Disponibilidad", ["Disponible", "Vendido (V)"], key="alta_disp")
-        
-        with col2:
-            prov_nuevo = st.text_input("Proveedor", key="alta_prov")
-            fecha_adq = st.date_input("Fecha Adquisición", key="alta_fecha_adq")
-            factura_nueva = st.text_input("Factura / Ref", key="alta_factura")
-            desc_nueva = st.text_area("Descripción / Notas", key="alta_desc")
-
-        st.subheader("💰 Cálculos Financieros y Costos")
-        col_c1, col_c2, col_c3 = st.columns(3)
-        
-        with col_c1:
-            precio_adq = st.number_input("Precio Adquisición ($)", min_value=0.0, step=100.0, key="alta_p_adq")
-            costo_restauracion = st.number_input("Costo Restauración ($)", min_value=0.0, step=50.0, key="alta_p_rest")
-            flete_gastos = st.number_input("Flete / Gastos Varios ($)", min_value=0.0, step=50.0, key="alta_p_flete")
-            
-            # Cálculo directo en vivo de Costo Total
-            costo_total_calculado = precio_adq + costo_restauracion + flete_gastos
-            st.info(f"*Costo Total:* ${costo_total_calculado:,.2f}")
-
-        with col_c2:
-            st.markdown("*Showroom*")
-            factor_sr = st.number_input("Factor Multiplicador Showroom", min_value=1.0, value=2.5, step=0.1, key="alta_fact_sr")
-            
-            # Cálculos en vivo Showroom
-            precio_sug_sr = costo_total_calculado * factor_sr
-            # Regla de redondeo a 50 o 100
-            redondeo_sr = math.ceil(precio_sug_sr / 50.0) * 50 if precio_sug_sr > 0 else 0.0
-            
-            st.write(f"Precio Sugerido: *${precio_sug_sr:,.2f}*")
-            st.success(f"*Redondeo Showroom:* ${redondeo_sr:,.2f}")
-
-        with col_c3:
-            st.markdown("*Casa Palacio*")
-            factor_cp = st.number_input("Factor Multiplicador CP", min_value=1.0, value=3.0, step=0.1, key="alta_fact_cp")
-            
-            # Cálculos en vivo CP
-            precio_sug_cp = costo_total_calculado * factor_cp
-            redondeo_cp = math.ceil(precio_sug_cp / 50.0) * 50 if precio_sug_cp > 0 else 0.0
-            
-            st.write(f"Precio Sugerido CP: *${precio_sug_cp:,.2f}*")
-            st.success(f"*Redondeo Casa Palacio:* ${redondeo_cp:,.2f}")
-
-        st.divider()
-
-        # BOTÓN DE GUARDADO DIRECTO
-        if st.button("💾 Guardar Producto Completo", use_container_width=True, type="primary", key="btn_guardar_alta"):
-            if not modelo_nuevo:
-                st.error("❌ El campo 'Modelo / Código' es obligatorio para poder guardar.")
-            else:
-                with st.spinner("Guardando en Supabase..."):
-                    payload_json = {
-                        "MODELO": modelo_nuevo,
-                        "NOMBRE": nombre_nuevo,
-                        "CATEGORIA": cat_nueva,
-                        "UBICACION": ubi_nueva,
-                        "DISP": "V" if "Vendido" in disp_nueva else "",
-                        "PROVEEDOR": prov_nuevo,
-                        "FECHA_ADQUISICION": str(fecha_adq),
-                        "FACTURA": factura_nueva,
-                        "DESCRIPCION": desc_nueva,
-                        "PRECIO_ADQUISICION": precio_adq,
-                        "COSTO_RESTAURACION": costo_restauracion,
-                        "FLETE_GASTOS": flete_gastos,
-                        "COSTO_TOTAL": costo_total_calculado,
-                        "FACTOR_SHOWROOM": factor_sr,
-                        "PRECIO_SUGERIDO_SHOWROOM": precio_sug_sr,
-                        "REDONDEO_SHOWROOM": redondeo_sr,
-                        "FACTOR_CP": factor_cp,
-                        "PRECIO_SUGERIDO_CP": precio_sug_cp,
-                        "REDONDEO_CP": redondeo_cp
-                    }
-
-                    url_img_default = f"{SUPABASE_URL}/storage/v1/object/public/imagenes/{modelo_nuevo}.jpg"
-
-                    registro_db = {
-                        "MODELO": modelo_nuevo,
-                        "RUTA_IMAGEN": url_img_default,
-                        "datos_json": json.dumps(payload_json, ensure_ascii=False)
-                    }
-
-                    try:
-                        res = supabase.table("productos").upsert(registro_db, on_conflict="MODELO").execute()
-                        if res.data:
-                            st.balloons()
-                            st.success(f"🎉 ¡Producto *{modelo_nuevo}* guardado exitosamente en Supabase!")
-                            st.caption("Ya puedes buscarlo inmediatamente en la pestaña de Búsqueda.")
-                        else:
-                            st.error("⚠️ No se recibió confirmación de Supabase al guardar.")
-                    except Exception as ex_alta:
-                        st.error(f"❌ Error al guardar en la base de datos: {ex_alta}")
+        render_formulario_producto()
     else:
         st.info("Tu rol no tiene permisos para dar de alta productos.")
 
