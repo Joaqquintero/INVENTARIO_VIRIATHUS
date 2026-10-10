@@ -500,8 +500,11 @@ with tab1:
                 col_actual = cols[idx % cols_por_fila]
                 with col_actual:
                     with st.container(border=True):
-                        if img_url:
-                            st.image(img_url, use_container_width=True)
+                        if img_url and (img_url.startswith("http") or os.path.exists(img_url)):
+                            try:
+                                st.image(img_url, use_container_width=True)
+                            except Exception:
+                                st.caption("🖼️ Sin imagen asignada")
                         else:
                             st.caption("🖼️ Sin imagen asignada")
                         
