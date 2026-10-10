@@ -126,7 +126,9 @@ def ejecutar_script_python(nombre_script):
 
 def guardar_producto_db(modelo_key, datos_dict):
     """Guarda o actualiza el producto correctamente en Supabase."""
-    url_img_default = f"{SUPABASE_URL}/storage/v1/object/public/imagenes/{modelo_key}.jpg"
+    # Obtener la URL de Supabase de manera segura desde secrets
+    sb_url = st.secrets.get("SUPABASE_URL", "")
+    url_img_default = f"{sb_url}/storage/v1/object/public/imagenes/{modelo_key}.jpg"
     
     payload_json = json.dumps(datos_dict, ensure_ascii=False)
     
@@ -138,6 +140,8 @@ def guardar_producto_db(modelo_key, datos_dict):
     
     res = supabase.table("productos").upsert(registro_db, on_conflict="MODELO").execute()
     return res
+
+
 
 def render_formulario_producto(datos_previos={}, modelo_existente=None):
     is_edit = modelo_existente is not None
