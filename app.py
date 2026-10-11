@@ -57,6 +57,28 @@ if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
 
 user = st.session_state["user_info"]
 
+# --- FUNCIONES AUXILIARES DE CÁLCULO Y LIMPIEZA V2 ---
+def hay(v):
+    """True si el usuario escribió algo en el campo."""
+    return str(v).strip() != ""
+
+def ok(*vals):
+    """True si todos los valores ya están calculados (no son None)."""
+    return all(v is not None for v in vals)
+
+def mostrar_calculado(label, valor, key, formula=None):
+    """Campo de solo lectura que se actualiza solo. Vacío si aún no hay datos."""
+    txt = f"{valor:,.2f}" if valor is not None else ""
+    # La key incluye el valor: si cambia, Streamlit redibuja el campo con el nuevo número
+    st.text_input(label, value=txt, disabled=True,
+                  placeholder="— pendiente —", key=f"{key}_{txt}")
+    if formula:
+        st.caption(f"ℹ️ *{formula}*")
+
+def num(v):
+    """Para guardar: None -> 0.0"""
+    return float(v) if v is not None else 0.0
+
 # --- FUNCIONES AUXILIARES DE CÁLCULO Y LIMPIEZA ---
 def to_float(val, default=0.0):
     if val is None or val == "":
@@ -277,9 +299,10 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.session_state[num_rest_key] += 1
         st.rerun()
 
-    st.divider()
+        st.divider()
     st.header("💵 4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
 
+    # ---------- COSTOS BASE (manuales) ----------
     st.subheader("📥 Registro de Costos Base")
     col_c1, col_c2, col_c3, col_c4 = st.columns(4)
     with col_c1:
@@ -293,115 +316,106 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         v_otros_costos = st.text_input("OTROS COSTOS ($)", value=str(datos_previos.get("OTROS_COSTOS", "")), key=f"{prefix}_c_otros")
     with col_c4:
         v_aportacion_gastos = st.text_input("APORTACION GASTOS ($)", value=str(datos_previos.get("APORTACION_GASTOS", "")), key=f"{prefix}_c_aport")
-        v_factor_vir = st.text_input("FACTOR VIRIATHUS", value=str(datos_previos.get("FACTOR_VIRIATHUS", "1.4")), key=f"{prefix}_factor_vir")
+        factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
+                                           min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
 
-    c_adq = to_float(v_costo_adq)
-    c_fin = to_float(v_costo_fin)
-    c_rest = to_float(v_costo_rest)
-    c_fletes = to_float(v_costo_fletes)
-    c_otros = to_float(v_otros_costos)
-    factor_viriathus = to_float(v_factor_vir, 1.4)
-    c_reg = to_float(v_costo_reg)
+    c_adq, c_fin, c_rest = to_float(v_costo_adq), to_float(v_costo_fin), to_float(v_costo_rest)
+    c_fletes, c_otros = to_float(v_costo_fletes), to_float(v_otros_costos)
 
-    calc_total_costo = c_adq + c_fin + c_rest + c_fletes + c_otros
-    if calc_total_costo == 0 and c_reg > 0:
-        calc_total_costo = c_reg
-
-    v_total_costo_input = st.text_input("TOTAL COSTO ($)", value=str(datos_previos.get("TOTAL_COSTO", f"{calc_total_costo:.2f}")), key=f"{prefix}_tot_costo")
-    st.caption("ℹ️ *Automático: COSTO DE ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS*")
-    total_costo = to_float(v_total_costo_input, calc_total_costo)
+    # TOTAL COSTO (aparece en cuanto se captura al menos un costo)
+    hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos])
+    total_costo = (c_adq + c_fin + c_rest + c_fletes + c_otros) if hay_costos else None
+    mostrar_calculado("TOTAL COSTO ($)", total_costo, f"{prefix}_tot_costo",
+                      "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS")
 
     st.divider()
     col_show, col_cp = st.columns(2)
 
+    # ---------- SHOWROOM / VIRIATHUS ----------
     with col_show:
         st.subheader("🏛️ SHOWROOM / VIRIATHUS")
         v_utilidad_sh = st.text_input("UTILIDAD SHOWROOM ($)", value=str(datos_previos.get("UTILIDAD_SHOWROOM", "")), key=f"{prefix}_util_sh")
-        utilidad_sh = to_float(v_utilidad_sh)
+        utilidad_sh = to_float(v_utilidad_sh) if hay(v_utilidad_sh) else None
 
-        calc_uv = ((c_fletes + utilidad_sh) * factor_viriathus) - c_fletes
-        v_uv = st.text_input("UTILIDAD VIRIATHUS ($)", value=str(datos_previos.get("UTILIDAD_VIRIATHUS", f"{calc_uv:.2f}")), key=f"{prefix}_uv")
-        st.caption("ℹ️ *Automático: ((COSTO FLETES + UTILIDAD SHOWROOM) * FACTOR VIRIATHUS) - COSTO FLETES*")
-        utilidad_viriathus = to_float(v_uv, calc_uv)
+        utilidad_viriathus = ((c_fletes + utilidad_sh) * factor_viriathus - c_fletes) if ok(utilidad_sh) else None
+        mostrar_calculado("UTILIDAD VIRIATHUS ($)", utilidad_viriathus, f"{prefix}_uv",
+                          "((COSTO FLETES + UTILIDAD SHOWROOM) * FACTOR VIRIATHUS) - COSTO FLETES")
 
-        calc_ptv = total_costo + utilidad_viriathus
-        v_ptv = st.text_input("PRECIO TOTAL VIRIATHUS SIN IVA ($)", value=str(datos_previos.get("PRECIO_TOTAL_VIRIATHUS_SIN_IVA", f"{calc_ptv:.2f}")), key=f"{prefix}_ptv")
-        st.caption("ℹ️ *Automático: TOTAL COSTO + UTILIDAD VIRIATHUS*")
-        ptv_sin_iva = to_float(v_ptv, calc_ptv)
+        ptv_sin_iva = (total_costo + utilidad_viriathus) if ok(total_costo, utilidad_viriathus) else None
+        mostrar_calculado("PRECIO TOTAL VIRIATHUS SIN IVA ($)", ptv_sin_iva, f"{prefix}_ptv",
+                          "TOTAL COSTO + UTILIDAD VIRIATHUS")
 
-        calc_psci = total_costo + utilidad_sh
-        v_psci = st.text_input("PRECIO SIN COMISION INTERIORISTA ($)", value=str(datos_previos.get("PRECIO_SIN_COMISION_INTERIORISTA", f"{calc_psci:.2f}")), key=f"{prefix}_psci")
-        st.caption("ℹ️ *Automático: TOTAL COSTO + UTILIDAD SHOWROOM*")
-        precio_sin_com_int = to_float(v_psci, calc_psci)
+        precio_sin_com_int = (total_costo + utilidad_sh) if ok(total_costo, utilidad_sh) else None
+        mostrar_calculado("PRECIO SIN COMISION INTERIORISTA ($)", precio_sin_com_int, f"{prefix}_psci",
+                          "TOTAL COSTO + UTILIDAD SHOWROOM")
 
-        calc_pci = precio_sin_com_int / 0.9 if precio_sin_com_int > 0 else 0.0
-        v_pci = st.text_input("PRECIO COMISION INTERIORISTA ($)", value=str(datos_previos.get("PRECIO_COMISION_INTERIORISTA", f"{calc_pci:.2f}")), key=f"{prefix}_pci")
-        st.caption("ℹ️ *Automático: PRECIO SIN COMISION INTERIORISTA / 0.9*")
-        precio_com_int = to_float(v_pci, calc_pci)
+        precio_com_int = (precio_sin_com_int / 0.9) if ok(precio_sin_com_int) else None
+        mostrar_calculado("PRECIO COMISION INTERIORISTA ($)", precio_com_int, f"{prefix}_pci",
+                          "PRECIO SIN COMISION INTERIORISTA / 0.9")
 
-        calc_iva_sh = precio_com_int * 0.16
-        v_iva_sh = st.text_input("IVA SHOWROOM ($)", value=str(datos_previos.get("IVA_SHOWROOM", f"{calc_iva_sh:.2f}")), key=f"{prefix}_iva_sh")
-        st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA * 16%*")
-        iva_sh = to_float(v_iva_sh, calc_iva_sh)
+        iva_sh = (precio_com_int * 0.16) if ok(precio_com_int) else None
+        mostrar_calculado("IVA SHOWROOM ($)", iva_sh, f"{prefix}_iva_sh",
+                          "PRECIO COMISION INTERIORISTA * 16%")
 
-        calc_ps_con_iva = precio_com_int + iva_sh
-        v_ps_con_iva = st.text_input("PRECIO SHOWROOM CON IVA ($)", value=str(datos_previos.get("PRECIO_SHOWROOM_CON_IVA", f"{calc_ps_con_iva:.2f}")), key=f"{prefix}_ps_iva")
-        st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA + IVA*")
-        precio_sh_con_iva = to_float(v_ps_con_iva, calc_ps_con_iva)
+        precio_sh_con_iva = (precio_com_int + iva_sh) if ok(precio_com_int, iva_sh) else None
+        mostrar_calculado("PRECIO SHOWROOM CON IVA ($)", precio_sh_con_iva, f"{prefix}_ps_iva",
+                          "PRECIO COMISION INTERIORISTA + IVA")
 
-        sug_red_sh = aplicar_regla_redondeo(precio_sh_con_iva) if 'aplicar_regla_redondeo' in globals() else precio_sh_con_iva
-        v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", f"{sug_red_sh:.2f}")), key=f"{prefix}_red_sh")
-        st.caption("ℹ️ *Automático: Redondeado según regla (<500 entero, >500 en 50/00, >10000 en 00)*")
-        redondeo_sh = to_float(v_red_sh, sug_red_sh)
+        # REDONDEO SHOWROOM: manual, con sugerencia
+        v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", "")), key=f"{prefix}_red_sh")
+        if ok(precio_sh_con_iva):
+            st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(precio_sh_con_iva):,.2f}**")
+        redondeo_sh = to_float(v_red_sh) if hay(v_red_sh) else None
 
-        calc_cisi = precio_com_int - precio_sin_com_int
-        v_cisi = st.text_input("COMISION INTERIORISTA SIN IVA ($)", value=str(datos_previos.get("COMISION_INTERIORISTA_SIN_IVA", f"{calc_cisi:.2f}")), key=f"{prefix}_cisi")
-        st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA - PRECIO SIN COMISION INTERIORISTA*")
+        com_int_sin_iva = (precio_com_int - precio_sin_com_int) if ok(precio_com_int, precio_sin_com_int) else None
+        mostrar_calculado("COMISION INTERIORISTA SIN IVA ($)", com_int_sin_iva, f"{prefix}_cisi",
+                          "PRECIO COMISION INTERIORISTA - PRECIO SIN COMISION INTERIORISTA")
 
-        calc_cuv = precio_com_int - calc_cisi
-        v_cuv = st.text_input("COSTO + UTILIDAD VIRIATHUS ($)", value=str(datos_previos.get("COSTO_MAS_UTILIDAD_VIRIATHUS", f"{calc_cuv:.2f}")), key=f"{prefix}_cuv")
-        st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA*")
+        costo_mas_uv = (precio_com_int - com_int_sin_iva) if ok(precio_com_int, com_int_sin_iva) else None
+        mostrar_calculado("COSTO + UTILIDAD VIRIATHUS ($)", costo_mas_uv, f"{prefix}_cuv",
+                          "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA")
 
-        calc_uvsi = precio_com_int - calc_cisi - total_costo
-        v_uvsi = st.text_input("UTILIDAD VIRIATHUS SIN IVA ($)", value=str(datos_previos.get("UTILIDAD_VIRIATHUS_SIN_IVA", f"{calc_uvsi:.2f}")), key=f"{prefix}_uvsi")
-        st.caption("ℹ️ *Automático: PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA - TOTAL COSTO*")
+        util_vir_sin_iva = (precio_com_int - com_int_sin_iva - total_costo) if ok(precio_com_int, com_int_sin_iva, total_costo) else None
+        mostrar_calculado("UTILIDAD VIRIATHUS SIN IVA ($)", util_vir_sin_iva, f"{prefix}_uvsi",
+                          "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA - TOTAL COSTO")
 
-        calc_uvc = calc_cisi + calc_uvsi
-        v_uvc = st.text_input("UTILIDAD VIRIATHUS CON COMISION DE INTERIORISTA ($)", value=str(datos_previos.get("UTILIDAD_VIRIATHUS_CON_COMISION", f"{calc_uvc:.2f}")), key=f"{prefix}_uvc")
-        st.caption("ℹ️ *Automático: COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA*")
+        util_vir_con_com = (com_int_sin_iva + util_vir_sin_iva) if ok(com_int_sin_iva, util_vir_sin_iva) else None
+        mostrar_calculado("UTILIDAD VIRIATHUS CON COMISION DE INTERIORISTA ($)", util_vir_con_com, f"{prefix}_uvc",
+                          "COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA")
 
+    # ---------- CASA PALACIO ----------
     with col_cp:
         st.subheader("🏰 CASA PALACIO / C/P")
-        calc_pvcp_iva = (ptv_sin_iva / 0.65) * 1.16 if ptv_sin_iva > 0 else 0.0
-        v_pvcp_iva = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA (I/0.65/1.16) ($)", value=str(datos_previos.get("PRECIO_CP_CON_IVA_CALCULADO", f"{calc_pvcp_iva:.2f}")), key=f"{prefix}_pvcp_iva")
-        st.caption("ℹ️ *Automático: PRECIO TOTAL VIRIATHUS SIN IVA / 0.65 * 1.16*")
-        pvcp_iva = to_float(v_pvcp_iva, calc_pvcp_iva)
 
-        sug_pvcp_red = aplicar_regla_redondeo(pvcp_iva) if 'aplicar_regla_redondeo' in globals() else pvcp_iva
-        v_pvcp_red = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO ($)", value=str(datos_previos.get("CP_PRECIO_REDONDEADO", f"{sug_pvcp_red:.2f}")), key=f"{prefix}_pvcp_red")
-        st.caption("ℹ️ *Automático: Redondeado según regla (<500 entero, >500 en 50/00, >10000 en 00)*")
-        pvcp_red = to_float(v_pvcp_red, sug_pvcp_red)
+        pvcp_iva = (ptv_sin_iva / 0.65 * 1.16) if ok(ptv_sin_iva) else None
+        mostrar_calculado("PRECIO DE VENTA CASA PALACIO CON IVA (I/0.65/1.16) ($)", pvcp_iva, f"{prefix}_pvcp_iva",
+                          "PRECIO TOTAL VIRIATHUS SIN IVA / 0.65 * 1.16")
 
-        calc_cp_sin_iva = pvcp_red / 1.16 if pvcp_red > 0 else 0.0
-        v_cp_sin_iva = st.text_input("C/P PRECIO SIN IVA ($)", value=str(datos_previos.get("CP_PRECIO_SIN_IVA", f"{calc_cp_sin_iva:.2f}")), key=f"{prefix}_cp_sin_iva")
-        st.caption("ℹ️ *Automático: PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO / 1.16*")
-        cp_sin_iva = to_float(v_cp_sin_iva, calc_cp_sin_iva)
+        # REDONDEADO: manual, con sugerencia
+        v_pvcp_red = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO ($)",
+                                   value=str(datos_previos.get("CP_PRECIO_REDONDEADO", "")), key=f"{prefix}_pvcp_red")
+        if ok(pvcp_iva):
+            st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(pvcp_iva):,.2f}**")
+        pvcp_red = to_float(v_pvcp_red) if hay(v_pvcp_red) else None
 
-        calc_cp_utilidad = cp_sin_iva - ptv_sin_iva if pvcp_red > 0 else 0.0
-        v_cp_utilidad = st.text_input("C/P UTILIDAD ($)", value=str(datos_previos.get("CP_UTILIDAD", f"{calc_cp_utilidad:.2f}")), key=f"{prefix}_cp_util")
-        st.caption("ℹ️ *Automático: C/P PRECIO SIN IVA - PRECIO TOTAL VIRIATHUS SIN IVA*")
-        cp_utilidad = to_float(v_cp_utilidad, calc_cp_utilidad)
+        cp_sin_iva = (pvcp_red / 1.16) if ok(pvcp_red) else None
+        mostrar_calculado("C/P PRECIO SIN IVA ($)", cp_sin_iva, f"{prefix}_cp_sin_iva",
+                          "PRECIO CASA PALACIO CON IVA REDONDEADO / 1.16")
 
-        calc_cp_pct = (cp_utilidad / cp_sin_iva * 100.0) if cp_sin_iva > 0 else 0.0
-        v_cp_pct = st.text_input("C/P % DE UTILIDAD (%)", value=str(datos_previos.get("CP_PORCENTAJE_UTILIDAD", f"{calc_cp_pct:.2f}")), key=f"{prefix}_cp_pct")
-        st.caption("ℹ️ *Automático: (C/P UTILIDAD / C/P PRECIO SIN IVA) * 100*")
+        cp_utilidad = (cp_sin_iva - ptv_sin_iva) if ok(cp_sin_iva, ptv_sin_iva) else None
+        mostrar_calculado("C/P UTILIDAD ($)", cp_utilidad, f"{prefix}_cp_util",
+                          "C/P PRECIO SIN IVA - PRECIO TOTAL VIRIATHUS SIN IVA")
+
+        cp_pct = (cp_utilidad / cp_sin_iva * 100.0) if ok(cp_utilidad, cp_sin_iva) and cp_sin_iva > 0 else None
+        mostrar_calculado("C/P % DE UTILIDAD (%)", cp_pct, f"{prefix}_cp_pct",
+                          "(C/P UTILIDAD / C/P PRECIO SIN IVA) * 100")
 
         v_cantidad = st.text_input("CANTIDAD", value=str(datos_previos.get("CANTIDAD", "1")), key=f"{prefix}_cantidad")
         cantidad = int(to_float(v_cantidad, 1.0))
 
-        calc_total_cp = pvcp_red * cantidad
-        v_total_cp = st.text_input("TOTAL ($)", value=str(datos_previos.get("TOTAL_CP", f"{calc_total_cp:.2f}")), key=f"{prefix}_total_cp")
-        st.caption("ℹ️ *Automático: PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO * CANTIDAD*")
+        total_cp = (pvcp_red * cantidad) if ok(pvcp_red) else None
+        mostrar_calculado("TOTAL ($)", total_cp, f"{prefix}_total_cp",
+                          "PRECIO CASA PALACIO CON IVA REDONDEADO * CANTIDAD")
 
     st.divider()
     if st.button("🚀 Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
@@ -434,20 +448,23 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
             "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
             "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
             "REQUERIMIENTOS": requerimientos, "RESTAURADORES": restauradores_capturados,
-            "COSTO_REGISTRADO": to_float(v_costo_reg), "COSTO_ADQUISICION": c_adq,
+                        "COSTO_REGISTRADO": to_float(v_costo_reg), "COSTO_ADQUISICION": c_adq,
             "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest, "COSTO_FLETES": c_fletes,
             "OTROS_COSTOS": c_otros, "APORTACION_GASTOS": to_float(v_aportacion_gastos),
-            "TOTAL_COSTO": total_costo, "FACTOR_VIRIATHUS": factor_viriathus,
-            "UTILIDAD_SHOWROOM": utilidad_sh, "UTILIDAD_VIRIATHUS": utilidad_viriathus,
-            "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": ptv_sin_iva,
-            "PRECIO_SIN_COMISION_INTERIORISTA": to_float(v_psci), "PRECIO_COMISION_INTERIORISTA": to_float(v_pci),
-            "IVA_SHOWROOM": to_float(v_iva_sh), "PRECIO_SHOWROOM_CON_IVA": to_float(v_ps_con_iva),
-            "REDONDEO_SHOWROOM": to_float(v_red_sh), "COMISION_INTERIORISTA_SIN_IVA": to_float(v_cisi),
-            "COSTO_MAS_UTILIDAD_VIRIATHUS": to_float(v_cuv), "UTILIDAD_VIRIATHUS_SIN_IVA": to_float(v_uvsi),
-            "UTILIDAD_VIRIATHUS_CON_COMISION": to_float(v_uvc),
-            "PRECIO_CP_CON_IVA_CALCULADO": to_float(v_pvcp_iva), "CP_PRECIO_REDONDEADO": to_float(v_pvcp_red),
-            "CP_PRECIO_SIN_IVA": to_float(v_cp_sin_iva), "CP_UTILIDAD": to_float(v_cp_utilidad),
-            "CP_PORCENTAJE_UTILIDAD": to_float(v_cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": to_float(v_total_cp)
+            "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
+            "UTILIDAD_SHOWROOM": num(utilidad_sh), "UTILIDAD_VIRIATHUS": num(utilidad_viriathus),
+            "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
+            "PRECIO_SIN_COMISION_INTERIORISTA": num(precio_sin_com_int),
+            "PRECIO_COMISION_INTERIORISTA": num(precio_com_int),
+            "IVA_SHOWROOM": num(iva_sh), "PRECIO_SHOWROOM_CON_IVA": num(precio_sh_con_iva),
+            "REDONDEO_SHOWROOM": num(redondeo_sh),
+            "COMISION_INTERIORISTA_SIN_IVA": num(com_int_sin_iva),
+            "COSTO_MAS_UTILIDAD_VIRIATHUS": num(costo_mas_uv),
+            "UTILIDAD_VIRIATHUS_SIN_IVA": num(util_vir_sin_iva),
+            "UTILIDAD_VIRIATHUS_CON_COMISION": num(util_vir_con_com),
+            "PRECIO_CP_CON_IVA_CALCULADO": num(pvcp_iva), "CP_PRECIO_REDONDEADO": num(pvcp_red),
+            "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
+            "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp)
         }
 
         with st.spinner("Guardando en la base de datos..."):
