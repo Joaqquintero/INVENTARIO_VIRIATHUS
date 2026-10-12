@@ -101,13 +101,6 @@ def aplicar_regla_redondeo(valor):
     else:
         return float(math.ceil(valor / 100.0) * 100.0)
 
-def guardar_producto_db(modelo, datos_dict):
-    payload = {
-        "MODELO": str(modelo).strip(),
-        "datos_json": json.dumps(datos_dict)
-    }
-    supabase.table("productos").upsert(payload, on_conflict="MODELO").execute()
-
 def obtener_siguiente_modelo():
     try:
         offset = 0
@@ -558,11 +551,10 @@ with tab1:
 
         with st.spinner("Consultando inventario..."):
             # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
-            busqueda_clean = re.sub(r'[%"\']', '', busqueda)
-            
-            # Consulta limpia directamente a la columna MODELO
+            busqueda_clean = re.sub(r'[%"\',()]', '', busqueda)
+
             query = supabase.table("productos").select("*", count="exact")
-            query = query.ilike("MODELO", f"%{busqueda_clean}%")
+            query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
             
             resp = query.range(desde, hasta).execute()
             productos = resp.data
