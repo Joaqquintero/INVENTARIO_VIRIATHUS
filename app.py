@@ -536,8 +536,16 @@ def modal_editar_completo(mod_p, pdata):
 
 # TAB 1: BÚSQUEDA
 with tab1:
-    busqueda_raw = st.text_input("Buscar por Modelo:", key="search_bar")
-    busqueda = busqueda_raw.strip()
+    col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
+    with col_b1:
+        busqueda_raw = st.text_input("Buscar por modelo o palabra clave:", key="search_bar")
+    with col_b2:
+        rango_desde = st.text_input("Desde modelo", key="rango_desde").strip()
+    with col_b3:
+        rango_hasta = st.text_input("Hasta modelo", key="rango_hasta").strip()
+
+    modo_rango = rango_desde.isdigit() and rango_hasta.isdigit()
+    busqueda = f"{rango_desde} a {rango_hasta}" if modo_rango else busqueda_raw.strip()
     
     if busqueda:
         if "busqueda_anterior" not in st.session_state or st.session_state["busqueda_anterior"] != busqueda:
@@ -551,10 +559,14 @@ with tab1:
 
         with st.spinner("Consultando inventario..."):
             # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
-            busqueda_clean = re.sub(r'[%"\',()]', '', busqueda)
-
-            query = supabase.table("productos").select("*", count="exact")
-            query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
+            if modo_rango:
+                limite_sup = str(int(rango_hasta) + 1)
+                query = supabase.table("productos").select("*", count="exact")
+                query = query.gte("MODELO", rango_desde).lt("MODELO", limite_sup).order("MODELO")
+            else:
+                busqueda_clean = re.sub(r'[%"\',()]', '', busqueda)
+                query = supabase.table("productos").select("*", count="exact")
+                query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
             
             resp = query.range(desde, hasta).execute()
             productos = resp.data
