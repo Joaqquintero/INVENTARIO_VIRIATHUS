@@ -17,6 +17,14 @@ st.set_page_config(
 # ID principal de la carpeta 'master fotos' en Google Drive
 ID_MASTER_FOTOS = "1E6tlqi-W95qupX2Psi6XtgoHPpJo1ZEv"
 
+# Abre tu proyecto en ChatGPT y copia la URL de la barra del navegador
+PROYECTO_CHATGPT_URL = "https://chatgpt.com/g/g-p-6acd222151288191b9b5d8deb97b6941/project"
+
+PROMPTS_IA = {
+    "Descripción": 'Redacta la DESCRIPCIÓN / FICHA TÉCNICA del producto "{nombre}".',
+    "Cédula curatorial": 'Redacta la CÉDULA CURATORIAL del producto "{nombre}".',
+}
+
 # Cargar credenciales de Supabase
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
@@ -188,6 +196,22 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         descripcion = st.text_area("DESCRIPCIÓN / FICHA TÉCNICA", value=str(datos_previos.get("DESCRIPCION", "")), height=100, key=f"{prefix}_desc")
         cedula = st.text_area("CÉDULA CURATORIAL", value=str(datos_previos.get("CEDULA_CURATORIAL", "")), height=100, key=f"{prefix}_cedula")
         st.caption(f"📏 CARACTERES CÉDULA CURATORIAL: **{len(cedula)}**")
+        with st.expander("🤖 Redactar con ChatGPT"):
+            if not nombre.strip():
+                st.info("Escribe primero el NOMBRE del producto.")
+            else:
+                tipo = st.radio("¿Qué quieres redactar?", list(PROMPTS_IA.keys()),
+                                horizontal=True, key=f"{prefix}_ia_tipo")
+                prompt_ia = PROMPTS_IA[tipo].format(nombre=nombre.strip())
+
+                st.caption("1️⃣ Copia el prompt (icono arriba a la derecha del recuadro)")
+                st.code(prompt_ia, language=None)
+
+                st.caption("2️⃣ Abre el proyecto, pega el prompt y agrega la foto")
+                st.link_button("📂 Abrir mi proyecto en ChatGPT", PROYECTO_CHATGPT_URL,
+                               use_container_width=True, key=f"{prefix}_ia_proj")
+
+                st.caption("3️⃣ Copia la respuesta y pégala en el campo de abajo")
 
     with col2:
         c_dim1, c_dim2, c_dim3, c_dim4 = st.columns(4)
