@@ -6,6 +6,7 @@ import sys
 import os
 import re
 import math
+from shopify_borrador import crear_borrador_shopify
 
 # Configuración de la página
 st.set_page_config(
@@ -664,6 +665,15 @@ with tab1:
                         if user["role"] in ["Administrador", "Inventario"]:
                             if st.button("✏️ Editar Ficha Completa", use_container_width=True, key=f"btn_edit_{mod_p}_{idx}"):
                                 modal_editar_completo(mod_p, pdata)
+                            if st.button("🛍️ Crear borrador en Shopify", use_container_width=True, key=f"btn_shop_{mod_p}_{idx}"):
+                                with st.spinner("Enviando a Shopify..."):
+                                    ok, mensaje, url_shop = crear_borrador_shopify(mod_p, pdata)
+                                if ok:
+                                    st.success(mensaje)
+                                else:
+                                    st.warning(mensaje)
+                                if url_shop:
+                                    st.link_button("Abrir en Shopify", url_shop, use_container_width=True, key=f"lnk_shop_{mod_p}_{idx}")
 
             st.divider()
             c_bot_info, c_bot_pag = st.columns([2, 1])
