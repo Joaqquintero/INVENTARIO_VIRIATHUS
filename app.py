@@ -319,118 +319,144 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
         st.divider()
     st.header("💵 4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
-
+ 
     # ---------- COSTOS BASE (manuales) ----------
     st.subheader("📥 Registro de Costos Base")
-    col_c1, col_c2, col_c3, col_c4 = st.columns(4)
+    col_c1, col_c2, col_c3 = st.columns(3)
     with col_c1:
-        v_costo_reg = st.text_input("COSTO REGISTRADO ($)", value=str(datos_previos.get("COSTO_REGISTRADO", "")), key=f"{prefix}_c_reg")
         v_costo_adq = st.text_input("COSTO ADQUISICION ($)", value=str(datos_previos.get("COSTO_ADQUISICION", "")), key=f"{prefix}_c_adq")
-    with col_c2:
         v_costo_fin = st.text_input("COSTO FINANCIERO ($)", value=str(datos_previos.get("COSTO_FINANCIERO", "")), key=f"{prefix}_c_fin")
+    with col_c2:
         v_costo_rest = st.text_input("COSTO RESTAURO ($)", value=str(datos_previos.get("COSTO_RESTAURO", "")), key=f"{prefix}_c_rest")
-    with col_c3:
         v_costo_fletes = st.text_input("COSTO FLETES ($)", value=str(datos_previos.get("COSTO_FLETES", "")), key=f"{prefix}_c_fletes")
+    with col_c3:
         v_otros_costos = st.text_input("OTROS COSTOS ($)", value=str(datos_previos.get("OTROS_COSTOS", "")), key=f"{prefix}_c_otros")
-    with col_c4:
-        v_aportacion_gastos = st.text_input("APORTACION GASTOS ($)", value=str(datos_previos.get("APORTACION_GASTOS", "")), key=f"{prefix}_c_aport")
         factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
                                            min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
-
+ 
     c_adq, c_fin, c_rest = to_float(v_costo_adq), to_float(v_costo_fin), to_float(v_costo_rest)
     c_fletes, c_otros = to_float(v_costo_fletes), to_float(v_otros_costos)
-
-    # TOTAL COSTO (aparece en cuanto se captura al menos un costo)
+ 
+    # TOTAL COSTO. Si el producto viejo no tenía desglose pero sí un total (o costo registrado), se respeta.
     hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos])
-    total_costo = (c_adq + c_fin + c_rest + c_fletes + c_otros) if hay_costos else None
+    suma_costos = c_adq + c_fin + c_rest + c_fletes + c_otros
+    total_previo = to_float(datos_previos.get("TOTAL_COSTO", 0)) or to_float(datos_previos.get("COSTO_REGISTRADO", 0))
+    if hay_costos and suma_costos > 0:
+        total_costo = suma_costos
+    elif total_previo > 0:
+        total_costo = total_previo
+    elif hay_costos:
+        total_costo = suma_costos
+    else:
+        total_costo = None
     mostrar_calculado("TOTAL COSTO ($)", total_costo, f"{prefix}_tot_costo",
                       "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS")
-
+ 
     st.divider()
     col_show, col_cp = st.columns(2)
-
-    # ---------- SHOWROOM / VIRIATHUS ----------
+ 
+    # ---------- SHOWROOM ----------
     with col_show:
-        st.subheader("🏛️ SHOWROOM / VIRIATHUS")
-        v_utilidad_sh = st.text_input("UTILIDAD SHOWROOM ($)", value=str(datos_previos.get("UTILIDAD_SHOWROOM", "")), key=f"{prefix}_util_sh")
-        utilidad_sh = to_float(v_utilidad_sh) if hay(v_utilidad_sh) else None
-
-        utilidad_viriathus = ((c_fletes + utilidad_sh) * factor_viriathus - c_fletes) if ok(utilidad_sh) else None
-        mostrar_calculado("UTILIDAD VIRIATHUS ($)", utilidad_viriathus, f"{prefix}_uv",
-                          "((COSTO FLETES + UTILIDAD SHOWROOM) * FACTOR VIRIATHUS) - COSTO FLETES")
-
-        ptv_sin_iva = (total_costo + utilidad_viriathus) if ok(total_costo, utilidad_viriathus) else None
-        mostrar_calculado("PRECIO TOTAL VIRIATHUS SIN IVA ($)", ptv_sin_iva, f"{prefix}_ptv",
-                          "TOTAL COSTO + UTILIDAD VIRIATHUS")
-
-        precio_sin_com_int = (total_costo + utilidad_sh) if ok(total_costo, utilidad_sh) else None
-        mostrar_calculado("PRECIO SIN COMISION INTERIORISTA ($)", precio_sin_com_int, f"{prefix}_psci",
-                          "TOTAL COSTO + UTILIDAD SHOWROOM")
-
-        precio_com_int = (precio_sin_com_int / 0.9) if ok(precio_sin_com_int) else None
-        mostrar_calculado("PRECIO COMISION INTERIORISTA ($)", precio_com_int, f"{prefix}_pci",
-                          "PRECIO SIN COMISION INTERIORISTA / 0.9")
-
+        st.subheader("🏛️ SHOWROOM")
+        # Los espacios se crean en el orden en que se VEN y se llenan en el orden en que se CALCULAN,
+        # así UTILIDAD BRUTA (manual) queda abajo aunque los campos de arriba dependan de ella.
+        (c_aport, c_neta, c_sub, c_pci, c_iva, c_ub, c_psi,
+         c_red, c_cisi, c_cuv, c_uvsi, c_uvc) = [st.container() for _ in range(12)]
+ 
+        with c_ub:
+            v_ub = st.text_input("UTILIDAD BRUTA ($)",
+                                 value=str(datos_previos.get("UTILIDAD_BRUTA", datos_previos.get("UTILIDAD_SHOWROOM", ""))),
+                                 key=f"{prefix}_ub")
+        utilidad_bruta = to_float(v_ub) if hay(v_ub) else None
+ 
+        aportacion = (utilidad_bruta * 0.5) if ok(utilidad_bruta) else None
+        with c_aport:
+            mostrar_calculado("APORTACION GASTOS ($)", aportacion, f"{prefix}_aport", "UTILIDAD BRUTA * 50%")
+ 
+        utilidad_neta = (utilidad_bruta * 0.5) if ok(utilidad_bruta) else None
+        with c_neta:
+            mostrar_calculado("UTILIDAD NETA ($)", utilidad_neta, f"{prefix}_neta", "UTILIDAD BRUTA * 50%")
+ 
+        subtotal = (total_costo + utilidad_bruta) if ok(total_costo, utilidad_bruta) else None
+        with c_sub:
+            mostrar_calculado("SUBTOTAL ($)", subtotal, f"{prefix}_subtotal", "TOTAL COSTO + UTILIDAD BRUTA")
+ 
+        precio_com_int = (subtotal / 0.9) if ok(subtotal) else None
+        with c_pci:
+            mostrar_calculado("PRECIO COMISION INTERIORISTA ($)", precio_com_int, f"{prefix}_pci", "SUBTOTAL / 0.9")
+ 
         iva_sh = (precio_com_int * 0.16) if ok(precio_com_int) else None
-        mostrar_calculado("IVA SHOWROOM ($)", iva_sh, f"{prefix}_iva_sh",
-                          "PRECIO COMISION INTERIORISTA * 16%")
-
+        with c_iva:
+            mostrar_calculado("IVA SHOWROOM ($)", iva_sh, f"{prefix}_iva_sh", "PRECIO COMISION INTERIORISTA * 16%")
+ 
         precio_sh_con_iva = (precio_com_int + iva_sh) if ok(precio_com_int, iva_sh) else None
-        mostrar_calculado("PRECIO SHOWROOM CON IVA ($)", precio_sh_con_iva, f"{prefix}_ps_iva",
-                          "PRECIO COMISION INTERIORISTA + IVA")
-
-        # REDONDEO SHOWROOM: manual, con sugerencia
-        v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", "")), key=f"{prefix}_red_sh")
-        if ok(precio_sh_con_iva):
-            st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(precio_sh_con_iva):,.2f}**")
+        with c_psi:
+            mostrar_calculado("PRECIO SHOWROOM CON IVA ($)", precio_sh_con_iva, f"{prefix}_ps_iva",
+                              "PRECIO COMISION INTERIORISTA + IVA")
+ 
+        with c_red:
+            v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", "")), key=f"{prefix}_red_sh")
+            if ok(precio_sh_con_iva):
+                st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(precio_sh_con_iva):,.2f}**")
         redondeo_sh = to_float(v_red_sh) if hay(v_red_sh) else None
-
-        com_int_sin_iva = (precio_com_int - precio_sin_com_int) if ok(precio_com_int, precio_sin_com_int) else None
-        mostrar_calculado("COMISION INTERIORISTA SIN IVA ($)", com_int_sin_iva, f"{prefix}_cisi",
-                          "PRECIO COMISION INTERIORISTA - PRECIO SIN COMISION INTERIORISTA")
-
+ 
+        com_int_sin_iva = (precio_com_int - subtotal) if ok(precio_com_int, subtotal) else None
+        with c_cisi:
+            mostrar_calculado("COMISION INTERIORISTA SIN IVA ($)", com_int_sin_iva, f"{prefix}_cisi",
+                              "PRECIO COMISION INTERIORISTA - SUBTOTAL")
+ 
         costo_mas_uv = (precio_com_int - com_int_sin_iva) if ok(precio_com_int, com_int_sin_iva) else None
-        mostrar_calculado("COSTO + UTILIDAD VIRIATHUS ($)", costo_mas_uv, f"{prefix}_cuv",
-                          "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA")
-
+        with c_cuv:
+            mostrar_calculado("COSTO + UTILIDAD VIRIATHUS ($)", costo_mas_uv, f"{prefix}_cuv",
+                              "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA")
+ 
         util_vir_sin_iva = (precio_com_int - com_int_sin_iva - total_costo) if ok(precio_com_int, com_int_sin_iva, total_costo) else None
-        mostrar_calculado("UTILIDAD VIRIATHUS SIN IVA ($)", util_vir_sin_iva, f"{prefix}_uvsi",
-                          "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA - TOTAL COSTO")
-
+        with c_uvsi:
+            mostrar_calculado("UTILIDAD VIRIATHUS SIN IVA ($)", util_vir_sin_iva, f"{prefix}_uvsi",
+                              "PRECIO COMISION INTERIORISTA - COMISION INTERIORISTA SIN IVA - TOTAL COSTO")
+ 
         util_vir_con_com = (com_int_sin_iva + util_vir_sin_iva) if ok(com_int_sin_iva, util_vir_sin_iva) else None
-        mostrar_calculado("UTILIDAD VIRIATHUS CON COMISION DE INTERIORISTA ($)", util_vir_con_com, f"{prefix}_uvc",
-                          "COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA")
-
+        with c_uvc:
+            mostrar_calculado("UTILIDAD VIRIATHUS CON COMISION DE INTERIORISTA ($)", util_vir_con_com, f"{prefix}_uvc",
+                              "COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA")
+ 
     # ---------- CASA PALACIO ----------
     with col_cp:
         st.subheader("🏰 CASA PALACIO / C/P")
-
+ 
+        utilidad_viriathus = ((c_fletes + utilidad_bruta) * factor_viriathus - c_fletes) if ok(utilidad_bruta) else None
+        mostrar_calculado("UTILIDAD VIRIATHUS ($)", utilidad_viriathus, f"{prefix}_uv",
+                          "((COSTO FLETES + UTILIDAD BRUTA) * FACTOR VIRIATHUS) - COSTO FLETES")
+ 
+        ptv_sin_iva = (total_costo + utilidad_viriathus) if ok(total_costo, utilidad_viriathus) else None
+        mostrar_calculado("PRECIO TOTAL VIRIATHUS SIN IVA ($)", ptv_sin_iva, f"{prefix}_ptv",
+                          "TOTAL COSTO + UTILIDAD VIRIATHUS")
+ 
         pvcp_iva = (ptv_sin_iva / 0.65 * 1.16) if ok(ptv_sin_iva) else None
         mostrar_calculado("PRECIO DE VENTA CASA PALACIO CON IVA (I/0.65/1.16) ($)", pvcp_iva, f"{prefix}_pvcp_iva",
                           "PRECIO TOTAL VIRIATHUS SIN IVA / 0.65 * 1.16")
-
-        # REDONDEADO: manual, con sugerencia
+ 
         v_pvcp_red = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO ($)",
                                    value=str(datos_previos.get("CP_PRECIO_REDONDEADO", "")), key=f"{prefix}_pvcp_red")
         if ok(pvcp_iva):
             st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(pvcp_iva):,.2f}**")
-        pvcp_red = to_float(v_pvcp_red) if hay(v_pvcp_red) else None
-
+        pvcp_red = to_float(v_pvcp_red) if hay(v_pvcp_red) and to_float(v_pvcp_red) > 0 else None   # 0 = sin precio de C/P
+ 
         cp_sin_iva = (pvcp_red / 1.16) if ok(pvcp_red) else None
         mostrar_calculado("C/P PRECIO SIN IVA ($)", cp_sin_iva, f"{prefix}_cp_sin_iva",
                           "PRECIO CASA PALACIO CON IVA REDONDEADO / 1.16")
-
+ 
         cp_utilidad = (cp_sin_iva - ptv_sin_iva) if ok(cp_sin_iva, ptv_sin_iva) else None
         mostrar_calculado("C/P UTILIDAD ($)", cp_utilidad, f"{prefix}_cp_util",
                           "C/P PRECIO SIN IVA - PRECIO TOTAL VIRIATHUS SIN IVA")
-
+ 
         cp_pct = (cp_utilidad / cp_sin_iva * 100.0) if ok(cp_utilidad, cp_sin_iva) and cp_sin_iva > 0 else None
         mostrar_calculado("C/P % DE UTILIDAD (%)", cp_pct, f"{prefix}_cp_pct",
                           "(C/P UTILIDAD / C/P PRECIO SIN IVA) * 100")
-
+ 
         v_cantidad = st.text_input("CANTIDAD", value=str(datos_previos.get("CANTIDAD", "1")), key=f"{prefix}_cantidad")
         cantidad = int(to_float(v_cantidad, 1.0))
-
+ 
         total_cp = (pvcp_red * cantidad) if ok(pvcp_red) else None
         mostrar_calculado("TOTAL ($)", total_cp, f"{prefix}_total_cp",
                           "PRECIO CASA PALACIO CON IVA REDONDEADO * CANTIDAD")
@@ -466,13 +492,17 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
             "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
             "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
             "REQUERIMIENTOS": requerimientos, "RESTAURADORES": restauradores_capturados,
-                        "COSTO_REGISTRADO": to_float(v_costo_reg), "COSTO_ADQUISICION": c_adq,
-            "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest, "COSTO_FLETES": c_fletes,
-            "OTROS_COSTOS": c_otros, "APORTACION_GASTOS": to_float(v_aportacion_gastos),
+                        "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
+            "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
+            "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
+            "APORTACION_GASTOS": num(aportacion),
             "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
-            "UTILIDAD_SHOWROOM": num(utilidad_sh), "UTILIDAD_VIRIATHUS": num(utilidad_viriathus),
+            "UTILIDAD_BRUTA": num(utilidad_bruta), "UTILIDAD_NETA": num(utilidad_neta),
+            "UTILIDAD_SHOWROOM": num(utilidad_bruta),                 # compatibilidad con datos/scripts anteriores
+            "UTILIDAD_VIRIATHUS": num(utilidad_viriathus),
             "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
-            "PRECIO_SIN_COMISION_INTERIORISTA": num(precio_sin_com_int),
+            "SUBTOTAL": num(subtotal),
+            "PRECIO_SIN_COMISION_INTERIORISTA": num(subtotal),        # compatibilidad con datos/scripts anteriores
             "PRECIO_COMISION_INTERIORISTA": num(precio_com_int),
             "IVA_SHOWROOM": num(iva_sh), "PRECIO_SHOWROOM_CON_IVA": num(precio_sh_con_iva),
             "REDONDEO_SHOWROOM": num(redondeo_sh),
