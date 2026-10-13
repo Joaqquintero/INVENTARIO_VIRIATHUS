@@ -7,6 +7,8 @@ import os
 import re
 import math
 from shopify_borrador import crear_borrador_shopify
+import time
+from postgrest.exceptions import APIError
 
 # Configuración de la página
 st.set_page_config(
@@ -623,9 +625,20 @@ with tab1:
                 query = supabase.table("productos").select("*", count="exact")
                 query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
             
-            resp = query.range(desde, hasta).execute()
-            productos = resp.data
-            total_coincidencias = resp.count if resp.count is not None else len(productos)
+            resp, ultimo_error = None, None
+            for intento in range(3):
+                try:
+                    resp = query.range(desde, hasta).execute()
+                    break
+                except APIError as e:
+                    ultimo_error = e
+                    time.sleep(1)
+            if resp is None:
+                st.error(f"No se pudo consultar la base de datos: {ultimo_error}")
+                productos, total_coincidencias = [], 0
+            else:
+                productos = resp.data
+                total_coincidencias = resp.count if resp.count is not None else len(productos)
 
         if productos:
             total_paginas = max(1, ((total_coincidencias - 1) // tamano_pagina) + 1)
