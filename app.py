@@ -319,7 +319,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.session_state[num_rest_key] += 1
         st.rerun()
 
-        st.divider()
+    st.divider()
     st.header("💵 4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
  
     # ---------- COSTOS BASE (manuales) ----------
@@ -333,8 +333,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         v_costo_fletes = st.text_input("COSTO FLETES ($)", value=str(datos_previos.get("COSTO_FLETES", "")), key=f"{prefix}_c_fletes")
     with col_c3:
         v_otros_costos = st.text_input("OTROS COSTOS ($)", value=str(datos_previos.get("OTROS_COSTOS", "")), key=f"{prefix}_c_otros")
-        factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
-                                           min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
  
     c_adq, c_fin, c_rest = to_float(v_costo_adq), to_float(v_costo_fin), to_float(v_costo_rest)
     c_fletes, c_otros = to_float(v_costo_fletes), to_float(v_otros_costos)
@@ -362,22 +360,14 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         st.subheader("🏛️ SHOWROOM")
         # Los espacios se crean en el orden en que se VEN y se llenan en el orden en que se CALCULAN,
         # así UTILIDAD BRUTA (manual) queda abajo aunque los campos de arriba dependan de ella.
-        (c_aport, c_neta, c_sub, c_pci, c_iva, c_ub, c_psi,
-         c_red, c_cisi, c_cuv, c_uvsi, c_uvc) = [st.container() for _ in range(12)]
+        (c_sub, c_pci, c_iva, c_ub, c_psi,
+         c_red, c_cisi, c_cuv, c_uvsi, c_uvc) = [st.container() for _ in range(10)]
  
         with c_ub:
             v_ub = st.text_input("UTILIDAD BRUTA ($)",
                                  value=str(datos_previos.get("UTILIDAD_BRUTA", datos_previos.get("UTILIDAD_SHOWROOM", ""))),
                                  key=f"{prefix}_ub")
         utilidad_bruta = to_float(v_ub) if hay(v_ub) else None
- 
-        aportacion = (utilidad_bruta * 0.5) if ok(utilidad_bruta) else None
-        with c_aport:
-            mostrar_calculado("APORTACION GASTOS ($)", aportacion, f"{prefix}_aport", "UTILIDAD BRUTA * 50%")
- 
-        utilidad_neta = (utilidad_bruta * 0.5) if ok(utilidad_bruta) else None
-        with c_neta:
-            mostrar_calculado("UTILIDAD NETA ($)", utilidad_neta, f"{prefix}_neta", "UTILIDAD BRUTA * 50%")
  
         subtotal = (total_costo + utilidad_bruta) if ok(total_costo, utilidad_bruta) else None
         with c_sub:
@@ -426,13 +416,12 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
     with col_cp:
         st.subheader("🏰 CASA PALACIO / C/P")
  
-        utilidad_viriathus = ((c_fletes + utilidad_bruta) * factor_viriathus - c_fletes) if ok(utilidad_bruta) else None
-        mostrar_calculado("UTILIDAD VIRIATHUS ($)", utilidad_viriathus, f"{prefix}_uv",
-                          "((COSTO FLETES + UTILIDAD BRUTA) * FACTOR VIRIATHUS) - COSTO FLETES")
+        factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
+                                           min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
  
-        ptv_sin_iva = (total_costo + utilidad_viriathus) if ok(total_costo, utilidad_viriathus) else None
+        ptv_sin_iva = (subtotal * factor_viriathus) if ok(subtotal) else None
         mostrar_calculado("PRECIO TOTAL VIRIATHUS SIN IVA ($)", ptv_sin_iva, f"{prefix}_ptv",
-                          "TOTAL COSTO + UTILIDAD VIRIATHUS")
+                          "SUBTOTAL * FACTOR VIRIATHUS")
  
         pvcp_iva = (ptv_sin_iva / 0.65 * 1.16) if ok(ptv_sin_iva) else None
         mostrar_calculado("PRECIO DE VENTA CASA PALACIO CON IVA (I/0.65/1.16) ($)", pvcp_iva, f"{prefix}_pvcp_iva",
@@ -494,14 +483,12 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
             "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
             "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
             "REQUERIMIENTOS": requerimientos, "RESTAURADORES": restauradores_capturados,
-                        "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
+            "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
             "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
             "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
-            "APORTACION_GASTOS": num(aportacion),
             "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
-            "UTILIDAD_BRUTA": num(utilidad_bruta), "UTILIDAD_NETA": num(utilidad_neta),
+            "UTILIDAD_BRUTA": num(utilidad_bruta),
             "UTILIDAD_SHOWROOM": num(utilidad_bruta),                 # compatibilidad con datos/scripts anteriores
-            "UTILIDAD_VIRIATHUS": num(utilidad_viriathus),
             "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
             "SUBTOTAL": num(subtotal),
             "PRECIO_SIN_COMISION_INTERIORISTA": num(subtotal),        # compatibilidad con datos/scripts anteriores
@@ -768,5 +755,7 @@ with tab3:
                     with st.spinner("Sincronizando stock..."):
                         ejecutar_script_python("actualizar_stock.py")
 
+
+#18028 - 18024 - 18025 - 30233 - 32216 - 31149
 
     #Para iniciar, en terminal : streamlit run app.py
