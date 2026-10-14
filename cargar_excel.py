@@ -195,6 +195,11 @@ def construir_datos(row_dict, modelo):
     if factor is None:
         factor = 1.4
 
+    flete_detectado = c_fletes
+    c_fletes = 0.0
+    utilidad_bruta = utilidad_sh + flete_detectado
+
+
     total_costo = numero(row_dict, ["TOTAL COSTO"])
     if total_costo is None:
         total_costo = c_adq + c_fin + c_rest + c_fletes + c_otros
@@ -202,7 +207,9 @@ def construir_datos(row_dict, modelo):
         total_costo = costo_registrado
 
     # ---- Showroom ----
-    utilidad_viriathus = util_vir_xl if util_vir_xl is not None else (c_fletes + utilidad_sh) * factor - c_fletes
+    utilidad_viriathus = util_vir_xl if util_vir_xl is not None else (flete_detectado + utilidad_sh) * factor - flete_detectado
+
+
     ptv_sin_iva = numero(row_dict, ["PRECIO TOTAL VIRIATHUS SIN IVA"])
     if ptv_sin_iva is None:
         ptv_sin_iva = total_costo + utilidad_viriathus
@@ -308,7 +315,8 @@ def construir_datos(row_dict, modelo):
         "APORTACION_GASTOS": aportacion,
         "TOTAL_COSTO": total_costo,
         "FACTOR_VIRIATHUS": factor,
-        "UTILIDAD_SHOWROOM": utilidad_sh,
+        "UTILIDAD_BRUTA": utilidad_bruta,
+        "UTILIDAD_SHOWROOM": utilidad_bruta,
         "UTILIDAD_VIRIATHUS": utilidad_viriathus,
         "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": ptv_sin_iva,
         "PRECIO_SIN_COMISION_INTERIORISTA": psci,
