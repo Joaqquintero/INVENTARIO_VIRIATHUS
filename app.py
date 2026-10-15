@@ -7,6 +7,7 @@ import os
 import re
 import math
 from shopify_borrador import crear_borrador_shopify
+from ventas import render_ventas
 import time
 from postgrest.exceptions import APIError
 
@@ -251,6 +252,15 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
         subcategoria = st.text_input("SUBCATEGORÍA", value=str(datos_previos.get("SUBCATEGORÍA", "")), key=f"{prefix}_subcat")
         etiquetas = st.text_input("ETIQUETAS", value=str(datos_previos.get("ETIQUETAS", "")), key=f"{prefix}_etiq")
 
+        observaciones = st.text_area(
+            "📝 OBSERVACIONES (uso interno)",
+            value=str(datos_previos.get("OBSERVACIONES", "")),
+            height=100,
+            placeholder="Notas internas, recordatorios, pendientes…",
+            help="Solo para uso interno. No se publica ni se envía a Shopify.",
+            key=f"{prefix}_observaciones"
+    )
+
     st.divider()
     st.header("🛒 2. SECCIÓN VENTA")
     cv1, cv2, cv3 = st.columns(3)
@@ -479,7 +489,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                     st.warning(f"⚠️ Nota sobre foto: {ex_foto}")
 
         datos_guardar = {
+
             "MODELO": modelo, "NOMBRE": nombre, "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
+            "OBSERVACIONES": observaciones,
             "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
             "DISPONIBILIDAD": disponibilidad, "DISP": disponibilidad, "UBICACION": ubicacion,
             "CATEGORIA": categoria, "SUBCATEGORÍA": subcategoria, "ETIQUETAS": etiquetas,
@@ -539,7 +551,7 @@ with st.sidebar:
         st.rerun()
 
 st.title("🔍 Buscador e Inventario de Productos")
-tab1, tab2, tab3 = st.tabs(["🔎 Consultar / Buscar", "➕ Alta Manual", "⚡ Herramientas & Scripts"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔎 Consultar / Buscar", "➕ Alta Manual", "⚡ Herramientas & Scripts", "🧾 Ventas"])
 
 # DIÁLOGO DE EDICIÓN EN MODAL
 @st.dialog("✏️ Editar Producto Completo", width="large")
@@ -761,6 +773,10 @@ with tab3:
                 if st.button("🚀 Ejecutar actualizar_stock.py", use_container_width=True):
                     with st.spinner("Sincronizando stock..."):
                         ejecutar_script_python("actualizar_stock.py")
+
+# TAB 4: VENTAS
+with tab4:
+    render_ventas(supabase, user)
 
 
 #18028 - 18024 - 18025 - 30233 - 32216 - 31149
