@@ -197,7 +197,15 @@ def guardar_producto_db(modelo_key, datos_dict):
 
 def render_formulario_producto(datos_previos={}, modelo_existente=None):
    is_edit = modelo_existente is not None
-   prefix = f"edit_{modelo_existente}" if is_edit else "nuevo_prod"
+   # En el alta, el prefijo lleva un número de versión: al guardar bien se sube la versión
+   # y todos los campos se crean de nuevo (vacíos). Si hay error, la versión no cambia
+   # y el formulario conserva lo que se capturó.
+   version_alta = st.session_state.get("alta_version", 0)
+   prefix = f"edit_{modelo_existente}" if is_edit else f"nuevo_prod_{version_alta}"
+   if not is_edit:
+       aviso_ok = st.session_state.pop("alta_aviso_ok", None)
+       if aviso_ok:
+           st.success(aviso_ok)
    siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
   
    # --- SECCIÓN FOTO DE PORTADA EN ALTA / EDICIÓN ---
@@ -496,6 +504,17 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            st.error("❌ El campo MODELO es obligatorio.")
            return
 
+       # En alta, no permitir sobrescribir un modelo que ya existe
+       if not is_edit:
+           try:
+               existe = supabase.table("productos").select("MODELO").eq("MODELO", modelo).limit(1).execute()
+               if existe.data:
+                   st.error(f"❌ El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
+                   return
+           except Exception as ex_chk:
+               st.error(f"❌ No se pudo verificar si el modelo ya existe: {ex_chk}")
+               return
+
 
        # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
        if nueva_foto_manual is not None:
@@ -509,7 +528,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                        file_options={"content-type": "image/jpeg", "upsert": "true"}
                    )
                except Exception as ex_foto:
-                   st.warning(f"⚠️ Nota sobre foto: {ex_foto}")
+                   st.error(f"❌ No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
+                   return
 
 
        datos_guardar = {
@@ -552,13 +572,26 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        with st.spinner("Guardando en la base de datos..."):
            try:
                res = guardar_producto_db(modelo, datos_guardar)
-               if res.data:
-                   st.balloons()
-                   st.success(f"🎉 ¡Producto '{modelo}' guardado correctamente con su foto!")
-               else:
-                   st.warning("⚠️ Producto enviado, pero verifica si apareció en el listado.")
+               guardado_ok = bool(res.data)
+               error_guardado = None if guardado_ok else "Supabase no confirmó el guardado (respuesta vacía)."
            except Exception as ex:
-               st.error(f"❌ Error al guardar en Supabase: {ex}")
+               guardado_ok, error_guardado = False, str(ex)
+
+       if guardado_ok:
+           try:
+               ultimos_productos.clear()      # refresca la lista de "últimos 10"
+           except Exception:
+               pass
+           if is_edit:
+               st.success(f"🎉 ¡Producto '{modelo}' actualizado correctamente!")
+           else:
+               # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
+               st.session_state["alta_version"] = version_alta + 1
+               st.session_state["alta_aviso_ok"] = f"🎉 ¡Producto '{modelo}' guardado correctamente! Ya puedes capturar el siguiente."
+               st.rerun()
+       else:
+           st.error(f"❌ El producto '{modelo}' NO se guardó: {error_guardado} "
+                    "Corrige el problema y vuelve a tocar Guardar; el formulario conserva tus datos.")
 
 
    st.divider()
@@ -851,4 +884,5 @@ with tab3:
 with tab4:
    render_ventas(supabase, user)
 
-    #Para iniciar, en terminal : streamlit run app.py
+   #Para iniciar, en terminal : streamlit run app.py
+
