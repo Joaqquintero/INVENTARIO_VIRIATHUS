@@ -7,7 +7,7 @@ import os
 import re
 import math
 from shopify_borrador import crear_borrador_shopify, actualizar_producto_shopify, marcar_disponibilidad_shopify
-# Ventas en desarrollo
+# Ventas en desarrollo: poner en True para mostrar la pestaña «🧾 Ventas» (y cargar ventas.py)
 MOSTRAR_VENTAS = False
 if MOSTRAR_VENTAS:
     from ventas import render_ventas
@@ -53,6 +53,46 @@ def init_supabase():
 
 
 supabase = init_supabase()
+
+
+@st.cache_data(ttl=120, show_spinner=False)
+def _conteos_modelos():
+   """Cantidad de modelos numéricos según su número de dígitos (el MODELO es texto)."""
+   conteos = {}
+   for largo in range(8, 0, -1):
+       try:
+           r = (supabase.table("productos").select("MODELO", count="exact")
+                .like("MODELO", "_" * largo).lte("MODELO", "9" * largo).range(0, 0).execute())
+           conteos[largo] = r.count or 0
+       except Exception:
+           conteos[largo] = 0
+   return conteos
+
+
+def ultimos_productos(desde, n):
+   """Productos más recientes primero (número de modelo más alto), paginados: devuelve (lista, total)."""
+   conteos = _conteos_modelos()
+   total = sum(conteos.values())
+   encontrados, saltar, faltan = [], desde, n
+   for largo in range(8, 0, -1):          # primero los modelos de más dígitos
+       c = conteos.get(largo, 0)
+       if c <= saltar:
+           saltar -= c
+           continue
+       tomar = min(faltan, c - saltar)
+       try:
+           resp = (supabase.table("productos").select("*")
+                   .like("MODELO", "_" * largo).lte("MODELO", "9" * largo)
+                   .order("MODELO", desc=True).range(saltar, saltar + tomar - 1).execute())
+       except Exception:
+           resp = None
+       encontrados += (resp.data if resp else [])
+       faltan -= tomar
+       saltar = 0
+       if faltan <= 0:
+           break
+   return encontrados, total
+
 
 
 # --- AUTENTICACIÓN Y ROLES ---
@@ -587,7 +627,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
        if guardado_ok:
            try:
-               ultimos_productos.clear()      # refresca la lista de "últimos 10"
+               _conteos_modelos.clear()      # refresca la lista de últimos productos
            except Exception:
                pass
            if is_edit:
@@ -727,26 +767,6 @@ def modal_editar_completo(mod_p, pdata):
    render_formulario_producto(pdata, modelo_existente=mod_p)
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def ultimos_productos(n=10):
-   """Los n modelos con número más alto (los dados de alta más recientemente)."""
-   encontrados = []
-   for largo in range(8, 0, -1):          # primero los modelos de más dígitos
-       try:
-           resp = (supabase.table("productos").select("*")
-                   .like("MODELO", "_" * largo).order("MODELO", desc=True).limit(n).execute())
-       except Exception:
-           continue
-       for f in (resp.data or []):
-           m = str(f.get("MODELO", "")).strip()
-           if m.isdigit():
-               encontrados.append(f)
-       if len(encontrados) >= n:
-           break
-   encontrados.sort(key=lambda f: int(str(f["MODELO"]).strip()), reverse=True)
-   return encontrados[:n]
-
-
 # TAB 1: BÚSQUEDA
 with tab1:
    col_b1, col_b2, col_b3 = st.columns([2, 1, 1])
@@ -768,7 +788,7 @@ with tab1:
            st.session_state["pagina_actual"] = 0
 
 
-       tamano_pagina = 50
+       tamano_pagina = 30
        pagina = st.session_state.get("pagina_actual", 0)
        desde = pagina * tamano_pagina
        hasta = desde + tamano_pagina - 1
@@ -789,8 +809,7 @@ with tab1:
           
            resp, ultimo_error = None, None
            if mostrar_ultimos:
-               productos = ultimos_productos()
-               total_coincidencias = len(productos)
+               productos, total_coincidencias = ultimos_productos(desde, tamano_pagina)
            else:
                for intento in range(3):
                    try:
@@ -813,8 +832,9 @@ with tab1:
            col_info, col_pag = st.columns([2, 1])
            with col_info:
                if mostrar_ultimos:
-                   st.subheader("🆕 Últimos 10 productos agregados")
-                   st.caption("Escribe un modelo o palabra clave arriba para buscar en todo el inventario.")
+                   st.subheader("🆕 Últimos productos agregados")
+                   st.caption(f"Del más reciente al más antiguo · productos {desde + 1} a {min(hasta + 1, total_coincidencias)} "
+                              f"(Página {pagina + 1} de {total_paginas}). Escribe un modelo o palabra clave arriba para buscar.")
                else:
                    st.subheader(f"Resultados para \"{busqueda}\" ({total_coincidencias} encontrados):")
                    st.caption(f"Mostrando productos *{desde + 1}* a *{min(hasta + 1, total_coincidencias)}* (Página {pagina + 1} de {total_paginas})")
