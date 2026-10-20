@@ -59,10 +59,10 @@ supabase = init_supabase()
 def _conteos_modelos():
    """Cantidad de modelos numéricos según su número de dígitos (el MODELO es texto)."""
    conteos = {}
-   for largo in range(8, 0, -1):
+   for largo in range(12, 0, -1):
        try:
            r = (supabase.table("productos").select("MODELO", count="exact")
-                .like("MODELO", "_" * largo).lte("MODELO", "9" * largo).range(0, 0).execute())
+                .filter("MODELO", "match", "^[0-9]{%d}$" % largo).range(0, 0).execute())
            conteos[largo] = r.count or 0
        except Exception:
            conteos[largo] = 0
@@ -74,7 +74,7 @@ def ultimos_productos(desde, n):
    conteos = _conteos_modelos()
    total = sum(conteos.values())
    encontrados, saltar, faltan = [], desde, n
-   for largo in range(8, 0, -1):          # primero los modelos de más dígitos
+   for largo in range(12, 0, -1):          # primero los modelos de más dígitos
        c = conteos.get(largo, 0)
        if c <= saltar:
            saltar -= c
@@ -82,7 +82,7 @@ def ultimos_productos(desde, n):
        tomar = min(faltan, c - saltar)
        try:
            resp = (supabase.table("productos").select("*")
-                   .like("MODELO", "_" * largo).lte("MODELO", "9" * largo)
+                   .filter("MODELO", "match", "^[0-9]{%d}$" % largo)
                    .order("MODELO", desc=True).range(saltar, saltar + tomar - 1).execute())
        except Exception:
            resp = None
