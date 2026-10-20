@@ -179,6 +179,7 @@ def aplicar_regla_redondeo(valor):
        return float(math.ceil(valor / 100.0) * 100.0)
 
 
+@st.cache_data(ttl=60, show_spinner=False)
 def obtener_siguiente_modelo():
    try:
        offset = 0
@@ -243,6 +244,11 @@ def guardar_producto_db(modelo_key, datos_dict):
 
 
 
+# Al cambiar un campo solo se vuelve a ejecutar el formulario, no toda la página (más rápido).
+_fragmento = getattr(st, "fragment", None) or (lambda f: f)
+
+
+@_fragmento
 def render_formulario_producto(datos_previos={}, modelo_existente=None):
    is_edit = modelo_existente is not None
    # En el alta, el prefijo lleva un número de versión: al guardar bien se sube la versión
@@ -628,6 +634,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        if guardado_ok:
            try:
                _conteos_modelos.clear()      # refresca la lista de últimos productos
+               obtener_siguiente_modelo.clear()
            except Exception:
                pass
            if is_edit:
@@ -689,14 +696,18 @@ with st.sidebar:
    st.divider()
    # Ventas de Shopify -> inventario (revisa Shopify como máximo cada 2 minutos)
    _sync = sincronizar_en_segundo_plano(supabase)
-   if _sync["ok"]:
+   if _sync.get("pendiente"):
+       st.caption("🛒 Revisando Shopify…")
+   elif _sync["ok"]:
        st.caption(f"🛒 Shopify revisado a las {_sync['hora']}")
    else:
        st.warning(f"🛒 No se pudo revisar Shopify: {_sync['error']}")
    if user["role"] in ["Administrador", "Inventario"]:
        # Nombre, descripción y precio: se mantienen iguales en inventario y Shopify (revisa como máximo cada 5 min)
        _sync_p = sincronizar_productos_en_segundo_plano(supabase)
-       if _sync_p["ok"]:
+       if _sync_p.get("pendiente"):
+           st.caption("🔁 Revisando productos…")
+       elif _sync_p["ok"]:
            st.caption(f"🔁 Productos sincronizados a las {_sync_p['hora']}")
        else:
            st.warning(f"🔁 No se pudo sincronizar productos: {_sync_p['error']}")
