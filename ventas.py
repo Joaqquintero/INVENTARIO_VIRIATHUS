@@ -23,6 +23,7 @@ MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
 # Quién puede ver costos/utilidad, cancelar pedidos y ver comisiones
 ROLES_COSTOS = ("Administrador", "Inventario")
 ROLES_CANCELAR = ("Administrador", "Inventario")
+ROLES_EDITAR = ("Administrador", "Inventario", "Vendedor")   # quién puede cambiar status / observaciones
 ROLES_COMISIONES = ("Administrador",)
 
 
@@ -75,6 +76,9 @@ def catalogo(_sb, tipo):
 # ----------------------------------------------------------------------
 # Clientes ya registrados (para sugerir y no duplicar)
 # ----------------------------------------------------------------------
+CLIENTES_IGNORADOS = {"CANCELADO", "SIN NOMBRE"}   # nombres que nunca se sugieren como cliente
+
+
 def _norm(texto):
     """MAYÚSCULAS, sin acentos y sin espacios repetidos: 'José  García' -> 'JOSE GARCIA'."""
     t = unicodedata.normalize("NFD", str(texto or ""))
@@ -92,7 +96,7 @@ def _clientes_registrados(_sb):
         for r in filas:
             nombre = (r.get("cliente") or "").strip()
             nn = _norm(nombre)
-            if not nn:
+            if not nn or nn in CLIENTES_IGNORADOS:
                 continue
             # Las filas vienen de la más reciente a la más antigua: la primera fija nombre y última compra
             g = clientes.setdefault(nn, {"nombre": nombre, "pedidos": 0, "ultima": r.get("fecha")})
@@ -121,7 +125,20 @@ def _usar_cliente(key, nombre):
 # ----------------------------------------------------------------------
 # Cálculos del pedido (función pura, fácil de probar)
 # ----------------------------------------------------------------------
-def calcular(items, descuento_pct, con_iva, anticipo):
+SALDO_CERO = ("Pagado", "Obsequio", "Cancelado")   # con estos status no hay saldo por cobrar
+
+
+def anticipo_efectivo(anticipo, pagos, total):
+    """Lo ya cobrado del pedido: lo mayor entre el anticipo capturado y la suma de los pagos
+    (con un solo pago en 0 se asume el anticipo o, si no hay, el total). Nunca pasa del total."""
+    montos = [float(p["monto"]) for p in pagos]
+    cobrado = sum(montos)
+    if len(montos) == 1 and montos[0] == 0:
+        cobrado = anticipo if anticipo > 0 else total
+    return round(min(max(anticipo or 0.0, cobrado), total), 2)
+
+
+def calcular(items, descuento_pct, con_iva, anticipo, status=None):
     factor = 1.0 - (descuento_pct or 0.0) / 100.0
     lineas, bruto = [], 0.0
     for it in items:
@@ -140,7 +157,8 @@ def calcular(items, descuento_pct, con_iva, anticipo):
     return {
         "lineas": lineas, "bruto": round(bruto, 2), "total": total, "subtotal": subtotal,
         "iva": iva, "costo": costo, "utilidad": round(subtotal - costo, 2),
-        "comision": round(subtotal * 0.02, 2), "saldo": round(total - (anticipo or 0.0), 2),
+        "comision": round(subtotal * 0.02, 2),
+        "saldo": 0.0 if status in SALDO_CERO else round(total - (anticipo or 0.0), 2),
         "utilidad_bruta_inv": util_inv,
     }
 
@@ -207,6 +225,94 @@ def liberar_modelos(sb, numero):
         if aviso:
             avisos.append(aviso)
     return avisos
+
+
+def reactivar_modelos(sb, numero):
+    """Al reactivar un pedido cancelado: vuelve a marcar sus modelos como vendidos."""
+    avisos = []
+    items = sb.table("pedido_items").select("modelo").eq("numero_pedido", numero).execute().data
+    for it in items:
+        m = it.get("modelo")
+        if not m:
+            continue
+        info = buscar_modelo(sb, m)
+        if info is None:
+            avisos.append(f"Modelo {m}: no se encontró en inventario.")
+            continue
+        if info["vendido"]:
+            avisos.append(f"Modelo {m}: ya figuraba como vendido (¿en otro pedido?). Revísalo.")
+        aviso = marcar_disponibilidad(sb, m, True)
+        if aviso:
+            avisos.append(aviso)
+    return avisos
+
+
+def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=False):
+    """Cambia OBSERVACIONES (estado), status y notas de un pedido ya guardado.
+    pago = {forma_pago, banco_caja, monto, fecha_pago} (opcional): registra un cobro del saldo.
+    Devuelve (mensaje, avisos). Lanza ValueError si el cambio no es válido."""
+    numero = ped["numero_pedido"]
+    estaba = ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado"
+    cancela = estado == "Cancelado" or status == "Cancelado"
+    if not estado or not status:
+        raise ValueError("Elige las observaciones (estado del pedido) y el status.")
+    if cancela:
+        estado = status = "Cancelado"
+    if cancela != estaba and not puede_cancelar:
+        raise ValueError("Solo Administrador o Inventario pueden cancelar o reactivar un pedido.")
+    if cancela and pago:
+        raise ValueError("Un pedido cancelado no puede registrar pagos.")
+
+    total = _num(ped.get("total"))
+    anticipo = _num(ped.get("anticipo"))
+    cambios = {"estado_pedido": estado, "status": status, "observaciones": _nn(notas)}
+
+    pago_id = None
+    if pago and _num(pago.get("monto")) > 0:
+        monto = round(float(pago["monto"]), 2)
+        if not pago.get("forma_pago"):
+            raise ValueError("Elige la forma de pago del cobro.")
+        if monto > round(total - anticipo, 2) + 0.01:
+            raise ValueError(f"El pago (${monto:,.2f}) es mayor que el saldo (${total - anticipo:,.2f}).")
+        res = sb.table("pedido_pagos").insert({
+            "numero_pedido": numero, "forma_pago": pago["forma_pago"], "banco_caja": pago.get("banco_caja"),
+            "monto": monto, "fecha_pago": pago.get("fecha_pago")}).execute()
+        pago_id = (res.data or [{}])[0].get("id")
+        cambios["anticipo"] = round(min(total, anticipo + monto), 2)
+        if pago.get("fecha_pago") and not ped.get("fecha_pago"):
+            cambios["fecha_pago"] = pago["fecha_pago"]
+
+    try:
+        sb.table("pedidos").update(cambios).eq("numero_pedido", numero).execute()
+    except Exception:
+        if pago_id is not None:                      # que no quede un cobro huérfano
+            sb.table("pedido_pagos").delete().eq("id", pago_id).execute()
+        raise
+
+    avisos = []
+    if cancela and not estaba:
+        avisos += liberar_modelos(sb, numero)
+    elif estaba and not cancela:
+        avisos += reactivar_modelos(sb, numero)
+
+    # Comprobación: con status Pagado/Obsequio/Cancelado el saldo debe quedar en 0
+    if status in SALDO_CERO:
+        rb = sb.table("pedidos").select("saldo").eq("numero_pedido", numero).execute().data
+        if rb and _num(rb[0].get("saldo")) > 0.005:
+            avisos.append("El saldo no quedó en 0: falta correr en Supabase el ALTER TABLE del saldo "
+                          "(está en ventas_schema.sql, sección pedidos).")
+    return f"Pedido {numero} actualizado.", avisos
+
+
+def actualizar_facturacion(sb, numero, efectivo, con_iva, sin_iva, no_factura, calcular_sin_iva=True):
+    """Guarda efectivo / facturado con IVA / facturado sin IVA / N° de factura de un pedido."""
+    efectivo, con_iva, sin_iva = (round(max(0.0, _num(x)), 2) for x in (efectivo, con_iva, sin_iva))
+    if calcular_sin_iva:
+        sin_iva = round(con_iva / 1.16, 2)
+    sb.table("pedidos").update({
+        "efectivo": efectivo, "facturado_con_iva": con_iva, "facturado_sin_iva": sin_iva,
+        "no_factura": _nn(no_factura)}).eq("numero_pedido", numero).execute()
+    return f"Facturación del pedido {numero} guardada."
 
 
 # ----------------------------------------------------------------------
@@ -450,26 +556,16 @@ def tab_nuevo_pedido(sb, user):
             ss["vt_items"] = [i for i in items if i["id"] != quitar]
             st.rerun()
 
-    calc = calcular(items, descuento, con_iva, anticipo)
+    calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")))
 
     if items:
         st.caption("Totales por renglón: " + " · ".join(
             f"{('S/N' if it['es_sn'] else it['modelo'])}: ${calc['lineas'][i]:,.2f}"
             for i, it in enumerate(items)))
 
-    # ---- Totales ----
+    # ---- Totales (se llenan más abajo, cuando ya se capturaron los pagos y el status) ----
     st.divider()
-    t1, t2, t3, t4 = st.columns(4)
-    t1.metric("TOTAL", f"${calc['total']:,.2f}")
-    t2.metric("ANTICIPO", f"${anticipo:,.2f}")
-    t3.metric("SALDO", f"${calc['saldo']:,.2f}")
-    if con_iva:
-        t4.metric("SUBTOTAL / IVA", f"${calc['subtotal']:,.2f} / ${calc['iva']:,.2f}")
-    if ve_costos and items:
-        u1, u2, u3 = st.columns(3)
-        u1.metric("COSTO", f"${calc['costo']:,.2f}")
-        u2.metric("UTILIDAD", f"${calc['utilidad']:,.2f}")
-        u3.metric("COMISIÓN TOTAL (2%)", f"${calc['comision']:,.2f}")
+    caja_totales = st.container()
 
     # ---- Pagos ----
     st.divider()
@@ -505,6 +601,22 @@ def tab_nuevo_pedido(sb, user):
     with s2:
         status = _select_con_otro("STATUS *", catalogo(sb, "status"), k("status"))
     observaciones = st.text_area("NOTAS ADICIONALES", key=k("obs"), height=70)
+
+    # Totales con lo ya cobrado (pagos capturados) y el status elegido
+    anticipo_ef = anticipo_efectivo(anticipo, pagos, calc["total"])
+    calc = calcular(items, descuento, con_iva, anticipo_ef, status)
+    with caja_totales:
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("TOTAL", f"${calc['total']:,.2f}")
+        t2.metric("COBRADO / ANTICIPO", f"${anticipo_ef:,.2f}")
+        t3.metric("SALDO", f"${calc['saldo']:,.2f}")
+        if con_iva:
+            t4.metric("SUBTOTAL / IVA", f"${calc['subtotal']:,.2f} / ${calc['iva']:,.2f}")
+        if ve_costos and items:
+            u1, u2, u3 = st.columns(3)
+            u1.metric("COSTO", f"${calc['costo']:,.2f}")
+            u2.metric("UTILIDAD", f"${calc['utilidad']:,.2f}")
+            u3.metric("COMISIÓN TOTAL (2%)", f"${calc['comision']:,.2f}")
 
     # ---- Guardar ----
     st.divider()
@@ -549,7 +661,7 @@ def tab_nuevo_pedido(sb, user):
                 "telefono": _nn(telefono), "celular": _nn(celular),
                 "con_iva": bool(con_iva), "descuento_pct": float(descuento),
                 "costo_total": calc["costo"], "subtotal": calc["subtotal"], "iva": calc["iva"],
-                "total": calc["total"], "anticipo": float(anticipo),
+                "total": calc["total"], "anticipo": float(anticipo_ef),
                 "fecha_pago": min(fechas) if fechas else None,
                 "created_by": user["nombre"], "origen": "app",
             }
@@ -596,23 +708,48 @@ def tab_pedidos(sb, user):
     for aviso in st.session_state.pop("vp_avisos", []):
         st.warning(aviso)
 
-    busq = st.text_input("Buscar por N° de pedido o por cliente (vacío = últimos 50)", key="vp_busq").strip()
+    busq = st.text_input("Buscar por N° de pedido o por cliente", key="vp_busq").strip()
+
+    f1, f2 = st.columns([3, 2])
+    status_opts = catalogo(sb, "status")
+    filtro_status = f1.multiselect("Filtrar por status", status_opts, key="vp_f_status",
+                                   placeholder="Todos los status")
+    sin_costo = False
+    if ve_costos:
+        sin_costo = f2.checkbox("Solo pedidos sin costo", key="vp_f_sincosto",
+                                help="Pedidos con costo total en $0 (sin costo capturado). No incluye cancelados.")
+    hay_filtro = bool(busq or filtro_status or sin_costo)
+    limite = 500 if hay_filtro else 50
+
     q = (sb.table("pedidos")
-         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido")
-         .order("numero_pedido", desc=True).limit(50))
+         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido,costo_total")
+         .order("numero_pedido", desc=True).limit(limite))
     if busq:
         if busq.isdigit():
             q = q.eq("numero_pedido", int(busq))
         else:
             q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
+    if filtro_status:
+        q = q.in_("status", filtro_status)
+    if sin_costo:
+        q = q.eq("costo_total", 0).neq("status", "Cancelado")
     rows = q.execute().data
     if not rows:
-        st.info("No hay pedidos para mostrar.")
+        st.info("No hay pedidos para mostrar con ese filtro." if hay_filtro else "No hay pedidos para mostrar.")
         return
+
+    if hay_filtro:
+        extra = f" (se muestran los {limite} más recientes; afina el filtro)" if len(rows) >= limite else ""
+        st.caption(f"{len(rows)} pedido(s) encontrado(s){extra}.")
+    else:
+        st.caption("Últimos 50 pedidos. Usa la búsqueda o los filtros para ver otros.")
 
     df = pd.DataFrame(rows).rename(columns={
         "numero_pedido": "N° PEDIDO", "fecha": "FECHA", "cliente": "CLIENTE", "total": "TOTAL",
-        "anticipo": "ANTICIPO", "saldo": "SALDO", "status": "STATUS", "estado_pedido": "OBSERVACIONES"})
+        "anticipo": "ANTICIPO", "saldo": "SALDO", "status": "STATUS", "estado_pedido": "OBSERVACIONES",
+        "costo_total": "COSTO"})
+    if not ve_costos:
+        df = df.drop(columns=["COSTO"])
     st.dataframe(df, use_container_width=True, hide_index=True)
 
     sel = st.selectbox("Ver detalle del pedido", [r["numero_pedido"] for r in rows],
@@ -638,6 +775,11 @@ def tab_pedidos(sb, user):
         n1.metric("COSTO", f"${_num(ped['costo_total']):,.2f}")
         n2.metric("UTILIDAD", f"${_num(ped['utilidad']):,.2f}")
         n3.metric("COMISIÓN (2%)", f"${_num(ped['comision_total']):,.2f}")
+        g1, g2, g3, g4 = st.columns(4)
+        g1.metric("EFECTIVO", f"${_num(ped.get('efectivo')):,.2f}")
+        g2.metric("FACTURADO CON IVA", f"${_num(ped.get('facturado_con_iva')):,.2f}")
+        g3.metric("FACTURADO SIN IVA", f"${_num(ped.get('facturado_sin_iva')):,.2f}")
+        g4.metric("N° FACTURA", ped.get("no_factura") or "—")
 
     try:
         pdf = _generar_pdf(ped, items, [v["vendedor"] for v in vends])
@@ -653,9 +795,98 @@ def tab_pedidos(sb, user):
         if ve_costos:
             cols.append("costo_unitario")
         st.dataframe(dfi[cols], use_container_width=True, hide_index=True)
+    elif ped.get("modelos_texto"):
+        st.caption("📜 Pedido importado del Excel: no tiene precios por pieza, solo el texto original de los modelos.")
+        st.text(ped["modelos_texto"])
     if pagos:
         st.dataframe(pd.DataFrame(pagos)[["forma_pago", "banco_caja", "monto", "fecha_pago"]],
                      use_container_width=True, hide_index=True)
+
+    if user["role"] in ROLES_EDITAR:
+        ya_cancelado = ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado"
+        with st.expander("✏️ Cambiar status / observaciones"):
+            if ya_cancelado and not puede_cancelar:
+                st.caption("Solo Administrador o Inventario pueden modificar un pedido cancelado.")
+            else:
+                def _opciones(tipo, actual):
+                    ops = list(catalogo(sb, tipo))
+                    if actual and actual not in ops:
+                        ops.append(actual)
+                    return ops, (ops.index(actual) if actual in ops else None)
+
+                ops_e, idx_e = _opciones("estado_pedido", ped.get("estado_pedido"))
+                nuevo_estado = st.selectbox("OBSERVACIONES (estado del pedido)", ops_e, index=idx_e,
+                                            key=f"vp_e_estado_{sel}", placeholder="Elegir…")
+                ops_s, idx_s = _opciones("status", ped.get("status"))
+                nuevo_status = _select_con_otro("STATUS", ops_s, f"vp_e_status_{sel}", index=idx_s)
+                notas = st.text_area("NOTAS ADICIONALES", value=ped.get("observaciones") or "",
+                                     key=f"vp_e_notas_{sel}", height=70)
+
+                saldo_real = round(_num(ped["total"]) - _num(ped["anticipo"]), 2)
+                pago = None
+                if nuevo_status != "Cancelado" and saldo_real > 0.01:
+                    st.caption(f"Saldo por cobrar según los pagos registrados: ${saldo_real:,.2f}")
+                    pasa_a_pagado = (nuevo_status == "Pagado")
+                    if st.checkbox("Registrar el cobro del saldo ahora", value=pasa_a_pagado,
+                                   key=f"vp_e_chk_{sel}_{pasa_a_pagado}"):
+                        c1, c2, c3, c4 = st.columns([2, 3, 2, 2])
+                        forma = c1.selectbox("FORMA DE PAGO", catalogo(sb, "forma_pago"), index=None,
+                                             key=f"vp_e_forma_{sel}", placeholder="Elegir…")
+                        banco = c2.selectbox("BANCO / CAJA", catalogo(sb, "banco_caja"), index=None,
+                                             key=f"vp_e_banco_{sel}", placeholder="Elegir…")
+                        monto = c3.number_input("MONTO ($)", min_value=0.0, value=float(saldo_real), step=100.0,
+                                                format="%.2f", key=f"vp_e_monto_{sel}")
+                        fpago = c4.date_input("FECHA DE PAGO", value=dt.date.today(),
+                                              key=f"vp_e_fecha_{sel}", format="DD/MM/YYYY")
+                        pago = {"forma_pago": forma, "banco_caja": banco, "monto": float(monto),
+                                "fecha_pago": _fecha_iso(fpago)}
+                    elif pasa_a_pagado:
+                        st.caption("Sin registrar el cobro: el saldo se pondrá en 0, pero no quedará el pago anotado.")
+
+                if st.button("💾 Guardar cambios", type="primary", key=f"vp_e_guardar_{sel}"):
+                    try:
+                        mensaje, avisos = actualizar_pedido(sb, ped, nuevo_estado, nuevo_status, notas,
+                                                            pago=pago, puede_cancelar=puede_cancelar)
+                    except ValueError as ex:
+                        st.error(f"❌ {ex}")
+                    except Exception as ex:
+                        st.error(f"❌ No se pudo guardar: {ex}")
+                    else:
+                        st.session_state["vp_msg"] = mensaje
+                        st.session_state["vp_avisos"] = avisos
+                        st.rerun()
+
+    if ve_costos:
+        with st.expander("🧾 Facturación y efectivo"):
+            en_efectivo = round(sum(_num(pg.get("monto")) for pg in pagos
+                                    if str(pg.get("forma_pago") or "").strip().lower() == "efectivo"), 2)
+            st.caption(f"Pagos registrados en efectivo: ${en_efectivo:,.2f}  |  "
+                       f"Total del pedido: ${_num(ped['total']):,.2f}"
+                       + (f"  |  Subtotal sin IVA: ${_num(ped['subtotal']):,.2f}" if ped.get("con_iva") else ""))
+            fc1, fc2, fc3 = st.columns(3)
+            v_efec = fc1.number_input("EFECTIVO ($)", min_value=0.0, value=float(_num(ped.get("efectivo"))),
+                                      step=100.0, format="%.2f", key=f"vp_f_efec_{sel}")
+            v_con = fc2.number_input("FACTURADO CON IVA ($)", min_value=0.0,
+                                     value=float(_num(ped.get("facturado_con_iva"))),
+                                     step=100.0, format="%.2f", key=f"vp_f_con_{sel}")
+            auto_sin = st.checkbox("Calcular 'facturado sin IVA' automáticamente (con IVA ÷ 1.16)",
+                                   value=True, key=f"vp_f_auto_{sel}")
+            if auto_sin:
+                fc3.metric("FACTURADO SIN IVA ($)", f"{round(v_con / 1.16, 2):,.2f}")
+                v_sin = 0.0
+            else:
+                v_sin = fc3.number_input("FACTURADO SIN IVA ($)", min_value=0.0,
+                                         value=float(_num(ped.get("facturado_sin_iva"))),
+                                         step=100.0, format="%.2f", key=f"vp_f_sin_{sel}")
+            v_fact = st.text_input("N° DE FACTURA", value=ped.get("no_factura") or "", key=f"vp_f_nofact_{sel}")
+            if st.button("💾 Guardar facturación", key=f"vp_f_guardar_{sel}"):
+                try:
+                    mensaje = actualizar_facturacion(sb, sel, v_efec, v_con, v_sin, v_fact, auto_sin)
+                except Exception as ex:
+                    st.error(f"❌ No se pudo guardar: {ex}")
+                else:
+                    st.session_state["vp_msg"] = mensaje
+                    st.rerun()
 
     if puede_cancelar and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         with st.expander("⚠️ Cancelar este pedido"):
@@ -684,7 +915,11 @@ def tab_comisiones(sb, user):
     anio = c1.selectbox("Año", list(range(hoy.year, hoy.year - 6, -1)), key="vc_anio")
     mes = c2.selectbox("Mes", list(range(1, 13)), index=hoy.month - 1,
                        format_func=lambda m: MESES[m - 1], key="vc_mes")
-    vend = c3.multiselect("Vendedor/es (vacío = todos)", catalogo(sb, "vendedor"), key="vc_vend")
+    # Opciones: vendedores activos del catálogo + los que tuvieron comisiones ese mes (aunque ya no estén activos)
+    del_mes = (sb.table("v_comisiones_mensual").select("vendedor").eq("anio", anio).eq("mes", mes)
+               .execute().data)
+    opciones = sorted(set(catalogo(sb, "vendedor")) | {r["vendedor"] for r in del_mes})
+    vend = c3.multiselect("Vendedor/es (vacío = todos)", opciones, key="vc_vend")
     solo_pagados = st.checkbox("Solo pedidos con status Pagado", key="vc_pagados")
 
     q = sb.table("v_comisiones").select("*").eq("anio", anio).eq("mes", mes).order("fecha")
@@ -728,6 +963,86 @@ def tab_comisiones(sb, user):
 
 
 # ----------------------------------------------------------------------
+# PESTAÑA: RESUMEN MENSUAL (ventas sin IVA, costos y utilidad por mes)
+# ----------------------------------------------------------------------
+def resumen_mensual(sb, anio, solo_pagados=False):
+    """Devuelve un DataFrame con una fila por mes (1-12) del año, sin pedidos cancelados."""
+    filas, desde = [], 0
+    while True:
+        r = (sb.table("pedidos")
+             .select("numero_pedido,mes,subtotal,costo_total,utilidad,status,estado_pedido")
+             .eq("anio", anio).order("numero_pedido").range(desde, desde + 999).execute().data)
+        filas += r
+        if len(r) < 1000:
+            break
+        desde += 1000
+    df = pd.DataFrame(filas, columns=["numero_pedido", "mes", "subtotal", "costo_total", "utilidad",
+                                      "status", "estado_pedido"])
+    for c in ("subtotal", "costo_total", "utilidad"):
+        df[c] = pd.to_numeric(df[c]).fillna(0.0)
+    df = df[(df["status"].fillna("") != "Cancelado") & (df["estado_pedido"].fillna("") != "Cancelado")]
+    if solo_pagados:
+        df = df[df["status"] == "Pagado"]
+    df = df.assign(sin_costo=(df["costo_total"] <= 0).astype(int))
+    por_mes = df.groupby("mes").agg(pedidos=("numero_pedido", "count"), ventas=("subtotal", "sum"),
+                                    costos=("costo_total", "sum"), utilidad=("utilidad", "sum"),
+                                    sin_costo=("sin_costo", "sum"))
+    por_mes = por_mes.reindex(range(1, 13), fill_value=0)
+    por_mes.index.name = "mes"
+    por_mes = por_mes.reset_index()
+    por_mes["margen"] = [(u / v * 100.0) if v else 0.0 for u, v in zip(por_mes["utilidad"], por_mes["ventas"])]
+    return por_mes
+
+
+def tab_resumen(sb, user):
+    hoy = dt.date.today()
+    c1, c2 = st.columns([1, 3])
+    anio = c1.selectbox("Año", list(range(hoy.year, hoy.year - 8, -1)), key="vr_anio")
+    solo_pagados = c2.checkbox("Solo pedidos con status Pagado", key="vr_pagados")
+    st.caption("Ventas = subtotal sin IVA de los pedidos del mes (por fecha del pedido). "
+               "No incluye pedidos cancelados. Utilidad = ventas − costos.")
+
+    try:
+        df = resumen_mensual(sb, anio, solo_pagados)
+    except Exception as ex:
+        st.error(f"No se pudo calcular el resumen: {ex}")
+        return
+    if df["pedidos"].sum() == 0:
+        st.info("No hay pedidos para ese año.")
+        return
+
+    tot_ventas, tot_costos, tot_util = df["ventas"].sum(), df["costos"].sum(), df["utilidad"].sum()
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric(f"VENTAS SIN IVA {anio}", f"${tot_ventas:,.2f}")
+    m2.metric(f"COSTOS {anio}", f"${tot_costos:,.2f}")
+    m3.metric(f"UTILIDAD {anio}", f"${tot_util:,.2f}")
+    m4.metric("MARGEN", f"{(tot_util / tot_ventas * 100.0) if tot_ventas else 0.0:,.1f}%")
+
+    tabla = df.assign(MES=[MESES[m - 1] for m in df["mes"]])[
+        ["MES", "pedidos", "ventas", "costos", "utilidad", "margen", "sin_costo"]].rename(columns={
+        "pedidos": "PEDIDOS", "ventas": "VENTAS SIN IVA", "costos": "COSTOS", "utilidad": "UTILIDAD",
+        "margen": "MARGEN %", "sin_costo": "PEDIDOS SIN COSTO"})
+    total = {"MES": "TOTAL " + str(anio), "PEDIDOS": int(df["pedidos"].sum()), "VENTAS SIN IVA": tot_ventas,
+             "COSTOS": tot_costos, "UTILIDAD": tot_util,
+             "MARGEN %": (tot_util / tot_ventas * 100.0) if tot_ventas else 0.0,
+             "PEDIDOS SIN COSTO": int(df["sin_costo"].sum())}
+    tabla = pd.concat([tabla, pd.DataFrame([total])], ignore_index=True)
+    st.dataframe(tabla, use_container_width=True, hide_index=True, column_config={
+        "VENTAS SIN IVA": st.column_config.NumberColumn(format="$%.2f"),
+        "COSTOS": st.column_config.NumberColumn(format="$%.2f"),
+        "UTILIDAD": st.column_config.NumberColumn(format="$%.2f"),
+        "MARGEN %": st.column_config.NumberColumn(format="%.1f%%")})
+    if int(df["sin_costo"].sum()):
+        st.caption("⚠️ \"Pedidos sin costo\" son pedidos con costo $0: su utilidad sale igual a la venta. "
+                   "Puedes encontrarlos en 📋 Pedidos con el filtro \"Solo pedidos sin costo\".")
+
+    grafica = df.assign(MES=[MESES[m - 1][:3] for m in df["mes"]]).set_index("MES")[["ventas", "costos", "utilidad"]]
+    st.bar_chart(grafica.rename(columns={"ventas": "Ventas sin IVA", "costos": "Costos", "utilidad": "Utilidad"}))
+    st.download_button("⬇️ Descargar resumen (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
+                       file_name=f"resumen_mensual_{anio}.csv", mime="text/csv")
+
+
+# ----------------------------------------------------------------------
 # PUNTO DE ENTRADA
 # ----------------------------------------------------------------------
 def render_ventas(sb, user):
@@ -738,15 +1053,11 @@ def render_ventas(sb, user):
         st.error(f"No se pudieron cargar los catálogos de ventas. ¿Ya corriste ventas_schema.sql en Supabase? Detalle: {ex}")
         return
 
-    nombres = ["🧾 Nuevo pedido", "📋 Pedidos"]
+    secciones = [("🧾 Nuevo pedido", tab_nuevo_pedido), ("📋 Pedidos", tab_pedidos)]
+    if user["role"] in ROLES_COSTOS:
+        secciones.append(("📊 Resumen mensual", tab_resumen))
     if user["role"] in ROLES_COMISIONES:
-        nombres.append("💰 Comisiones")
-    tabs = st.tabs(nombres)
-    with tabs[0]:
-        tab_nuevo_pedido(sb, user)
-    with tabs[1]:
-        tab_pedidos(sb, user)
-    if len(tabs) > 2:
-        with tabs[2]:
-            tab_comisiones(sb, user)
-
+        secciones.append(("💰 Comisiones", tab_comisiones))
+    for tab, (_, funcion) in zip(st.tabs([n for n, _ in secciones]), secciones):
+        with tab:
+            funcion(sb, user)

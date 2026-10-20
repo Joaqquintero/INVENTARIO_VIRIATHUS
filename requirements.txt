@@ -4,3 +4,4 @@ toml
 pillow
 openpyxl
 pandas
+reportlab 
