@@ -185,8 +185,8 @@ def _csv(filas):
 
 
 def render_traer_descripciones(supabase):
-    st.subheader("🛍️ Traer nombre y descripción de Shopify al inventario")
-    st.caption("Empareja cada producto de Shopify con el inventario por SKU = MODELO y copia el nombre y/o la "
+    st.subheader("🛍️ Traer nombre y descripción de Shopify al inventario",
+                 help="Empareja cada producto de Shopify con el inventario por SKU = MODELO y copia el nombre y/o la "
                "descripción (texto plano: se pierden negritas y enlaces). Lo anterior del inventario se guarda en el "
                "mismo producto (NOMBRE_ANTERIOR / DESCRIPCION_ANTERIOR) y puedes descargar un respaldo.")
     if st.button("🔍 Revisar Shopify", key="desc_revisar"):

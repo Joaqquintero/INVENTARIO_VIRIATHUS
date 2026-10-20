@@ -47,8 +47,8 @@ def aviso_pendiente(_sb):
 
 
 def render_ventas_shopify(sb):
-    st.subheader("🛒 Ventas de Shopify")
-    st.caption("Cuando un pedido de Shopify se paga, sus modelos se marcan como vendidos en el inventario; "
+    st.subheader("🛒 Ventas de Shopify",
+                 help="Cuando un pedido de Shopify se paga, sus modelos se marcan como vendidos en el inventario; "
                "si el pedido se cancela o reembolsa, vuelven a disponible. La app lo revisa sola cada pocos minutos.")
     estado = sincronizar_en_segundo_plano(sb)
     if estado["ok"]:

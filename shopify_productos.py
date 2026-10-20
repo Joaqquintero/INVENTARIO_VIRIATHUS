@@ -101,8 +101,8 @@ def _fmt(campo, v):
 
 
 def render_sync_productos(sb):
-    st.subheader("🔁 Sincronización de productos con Shopify")
-    st.caption("Nombre, descripción y precio se mantienen iguales en el inventario y en Shopify: lo que cambias en un "
+    st.subheader("🔁 Sincronización de productos con Shopify",
+                 help="Nombre, descripción y precio se mantienen iguales en el inventario y en Shopify: lo que cambias en un "
                "lado se copia al otro. Si cambias el mismo dato en los dos lados con valores distintos, no se toca "
                "nada y te pide elegir. Nunca se manda un dato vacío ni un precio en 0.")
     estado = sincronizar_productos_en_segundo_plano(sb)
