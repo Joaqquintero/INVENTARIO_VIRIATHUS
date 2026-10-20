@@ -516,12 +516,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        st.subheader("🏰 CASA PALACIO / C/P")
        factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
                                           min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
-       util_viriathus = ((utilidad_bruta * factor_viriathus) - (utilidad_bruta / 2)) if ok(utilidad_bruta) else None
-       mostrar_calculado("UTILIDAD VIRIATHUS ($)", util_viriathus, f"{prefix}_util_vir",
-                        "(UTILIDAD BRUTA * FACTOR VIRIATHUS) - (UTILIDAD BRUTA / 2)")
-       ptv_sin_iva = (util_viriathus + total_costo) if ok(util_viriathus, total_costo) else None
+       ptv_sin_iva = ((utilidad_bruta * factor_viriathus) + total_costo) if ok(utilidad_bruta, total_costo) else None
        mostrar_calculado("PRECIO TOTAL VIRIATHUS SIN IVA ($)", ptv_sin_iva, f"{prefix}_ptv",
-                        "UTILIDAD VIRIATHUS + TOTAL COSTO")
+                        "(UTILIDAD BRUTA * FACTOR VIRIATHUS) + TOTAL COSTO")
 
 
 
@@ -604,7 +601,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
            "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
            "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
-           "UTILIDAD_VIRIATHUS": num(util_viriathus),
            "UTILIDAD_BRUTA": num(utilidad_bruta),
            "UTILIDAD_SHOWROOM": num(utilidad_bruta),                 # compatibilidad con datos/scripts anteriores
            "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
