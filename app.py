@@ -6,6 +6,7 @@ import sys
 import os
 import re
 import math
+import hmac
 from shopify_borrador import crear_borrador_shopify, actualizar_producto_shopify, marcar_disponibilidad_shopify
 # Ventas en desarrollo: poner en True para mostrar la pestaña «🧾 Ventas» (y cargar ventas.py)
 MOSTRAR_VENTAS = False
@@ -96,11 +97,17 @@ def ultimos_productos(desde, n):
 
 
 # --- AUTENTICACIÓN Y ROLES ---
-USUARIOS = {
-   "admin": {"password": "admin123", "role": "Administrador", "nombre": "Admin Principal"},
-   "almacen": {"password": "almacen123", "role": "Inventario", "nombre": "Encargado de Almacén"},
-   "vendedor": {"password": "vendedor123", "role": "Vendedor", "nombre": "Ejecutivo de Ventas"}
-}
+# Los usuarios y contraseñas ya no están en el código: viven en los secretos de Streamlit
+# (.streamlit/secrets.toml en tu computadora; Settings > Secrets en Streamlit Cloud), sección [usuarios.<nombre>].
+def _cargar_usuarios():
+   try:
+       return {str(u): {"password": str(d["password"]), "role": str(d["role"]), "nombre": str(d["nombre"])}
+               for u, d in st.secrets["usuarios"].items()}
+   except Exception:
+       return {}
+
+
+USUARIOS = _cargar_usuarios()
 
 
 def login():
@@ -112,7 +119,9 @@ def login():
        btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
       
        if btn_login:
-           if username in USUARIOS and USUARIOS[username]["password"] == password:
+           if not USUARIOS:
+               st.error("No hay usuarios configurados. Agrega la sección [usuarios] en los secretos de la app.")
+           elif username in USUARIOS and hmac.compare_digest(USUARIOS[username]["password"].encode(), password.encode()):
                st.session_state["logged_in"] = True
                st.session_state["user_info"] = USUARIOS[username]
                st.success(f"Bienvenido, {USUARIOS[username]['nombre']}")
