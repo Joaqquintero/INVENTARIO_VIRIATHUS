@@ -22,7 +22,7 @@ from segundo_plano import TareaPeriodica
 from ventas import (calcular, buscar_modelo, catalogo, _num, _nn, _parse, _mostrar_ultimo,
                     iniciar_conversion, tab_nuevo_pedido)
 
-ROLES_COTIZAR = ("Administrador", "Vendedor")
+ROLES_COTIZAR = ("Administrador", "Inventario", "Vendedor")
 DIAS_VIGENCIA = 3
 ESTADOS = ("Vigente", "Convertida", "Vencida", "Cancelada")
 ICONO = {}

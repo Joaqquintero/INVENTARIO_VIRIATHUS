@@ -27,6 +27,7 @@ ROLES_COSTOS = ("Administrador", "Inventario")
 ROLES_CANCELAR = ("Administrador", "Inventario", "Vendedor")
 ROLES_EDITAR = ("Administrador", "Inventario", "Vendedor")   # quién puede cambiar status / observaciones
 ROLES_COMISIONES = ("Administrador",)
+ROLES_RESUMEN = ("Administrador",)          # resumen mensual: solo el administrador
 
 
 # ----------------------------------------------------------------------
@@ -1504,7 +1505,7 @@ def render_ventas(sb, user):
             secciones.insert(1, ("Cotizaciones", tab_cotizaciones))
     except Exception as ex:
         st.caption(f"Cotizaciones no disponible: {ex}")
-    if user["role"] in ROLES_COSTOS:
+    if user["role"] in ROLES_RESUMEN:
         secciones.append(("Resumen mensual", tab_resumen))
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))
