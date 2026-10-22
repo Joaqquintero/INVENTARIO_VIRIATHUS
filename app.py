@@ -30,7 +30,7 @@ try:
 except Exception:
    _icono = None
 st.set_page_config(
-   page_title="Gestión de Inventario y Catálogo",
+   page_title="VIRIATHUS - INVENTARIO",
    page_icon=_icono,
    layout="wide"
 )
