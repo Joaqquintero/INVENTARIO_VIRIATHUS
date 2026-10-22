@@ -19,7 +19,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_RIGHT
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
-from reportlab.platypus import (BaseDocTemplate, Frame, Image, KeepTogether, PageTemplate,
+from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, Image, KeepTogether, PageBreak, PageTemplate,
                                 Paragraph, Spacer, Table, TableStyle)
 
 # ----------------------------------------------------------------------
@@ -32,6 +32,19 @@ CORREO = "info@viriathus.com.mx"
 WHATSAPP = "56 2694 8583"
 INSTAGRAM = "ViriathusAntigüedades"
 FACEBOOK = "ViriathusAntigüedades"
+ENTREGA_CAMPOS = ("domicilio", "fecha_entrega", "horario_entrega", "atencion",
+                  "telefono_entrega", "email_entrega", "notas_entrega")
+FACTURA_CAMPOS = ("uso_cfdi", "concepto", "telefono_facturacion", "email_facturacion", "notas_facturacion")
+
+
+def _mostrar_seccion(pedido, bandera, campos):
+    """Entrega / facturación solo salen si se marcó el check. En pedidos viejos (sin check) salen si traen algún dato."""
+    marca = pedido.get(bandera)
+    if marca is not None:
+        return bool(marca)
+    return any(str(pedido.get(c) or "").strip() for c in campos)
+
+
 FILAS_MINIMAS = 9          # el formato muestra al menos estas filas de productos (aunque estén vacías)
 
 NOTAS = [
@@ -210,11 +223,11 @@ def _hacer_pie(pedido):
 
     def pie(c, doc):
         c.saveState()
-        if doc.page > 1:
+        if doc.page > 1 and not pedido.get("_sin_hoja"):
             c.setFont("Times-Roman", 8)
             c.drawRightString(letter[0] - MARGEN, letter[1] - 24, f"Pedido N° {numero} — hoja {doc.page}")
         c.setFont("Times-Roman", 10)
-        c.drawString(MARGEN, 58, DIRECCION)
+        c.drawCentredString(letter[0] / 2, 58, DIRECCION)
         c.setFont("Times-Roman", 9.5)
         y = 36
         c.drawString(MARGEN, y, WEB)
@@ -297,7 +310,7 @@ def items_desde_texto(texto):
 # ----------------------------------------------------------------------
 # Generador principal
 # ----------------------------------------------------------------------
-def generar_pdf_pedido(pedido, items, vendedores):
+def _story_pedido(pedido, items, vendedores):
     story = []
     sin_precios = False
     if not items:                                  # pedido importado del Excel: solo hay texto
@@ -334,31 +347,43 @@ def generar_pdf_pedido(pedido, items, vendedores):
                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                              ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
     cab.hAlign = "LEFT"
-    story += [cab, Spacer(1, 6)]
+    story += [cab, Spacer(1, 3)]
 
-    # ---- Datos de entrega ----
-    story.append(_p("DATOS DE ENTREGA", ST_SEC))
-    dom = Table([[_p("Domicilio:", ST_LBL), Paragraph(escape(str(pedido.get("domicilio") or "")), ST_VAL)],
-                 ["", ""]], colWidths=[52, ANCHO - 52 - 40], rowHeights=[None, 14])
-    dom.setStyle(TableStyle([("LINEBELOW", (1, 0), (1, 1), 0.6, NEGRO), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
-                             ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                             ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-    dom.hAlign = "LEFT"
-    story += [dom, Spacer(1, 2)]
-    story.append(_fila_campos([("Fecha de Entrega:", _fecha(pedido.get("fecha_entrega")), 80),
-                               ("Horario de Entrega:", pedido.get("horario_entrega"), 88),
-                               ("Atención:", pedido.get("atencion"), 46)]))
+    # ---- Contacto del cliente (siempre) ----
+    campos_c = [("Teléfono:", pedido.get("telefono"), 48), ("eMail:", pedido.get("email"), 80)]
+    if str(pedido.get("celular") or "").strip():
+        campos_c.insert(1, ("Celular:", pedido.get("celular"), 40))
+    story.append(_fila_campos(campos_c))
     story.append(Spacer(1, 6))
 
-    # ---- Datos de facturación ----
-    story.append(_p("DATOS DE FACTURACIÓN", ST_SEC))
-    story.append(_fila_campos([("Enviar Constancia de Situación Fiscal a:", CORREO_CONSTANCIA, 168),
-                               ("Uso CFDI:", pedido.get("uso_cfdi"), 46)]))
-    story.append(_fila_campos([("Concepto:", pedido.get("concepto"), 48),
-                               ("eMail de Cliente:", pedido.get("email"), 80)]))
-    story.append(_fila_campos([("Teléfono:", pedido.get("telefono"), 48),
-                               ("Celular:", pedido.get("celular"), 40)], ancho_total=420))
-    story.append(Spacer(1, 6))
+    # ---- Datos de entrega (solo si se pidieron o traen datos) ----
+    if _mostrar_seccion(pedido, "requiere_entrega", ENTREGA_CAMPOS):
+        story.append(_p("DATOS DE ENTREGA", ST_SEC))
+        dom = Table([[_p("Domicilio:", ST_LBL), Paragraph(escape(str(pedido.get("domicilio") or "")), ST_VAL)],
+                     ["", ""]], colWidths=[52, ANCHO - 52 - 40], rowHeights=[None, 14])
+        dom.setStyle(TableStyle([("LINEBELOW", (1, 0), (1, 1), 0.6, NEGRO), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+                                 ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                                 ("TOPPADDING", (0, 0), (-1, -1), 4), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
+        dom.hAlign = "LEFT"
+        story += [dom, Spacer(1, 2)]
+        story.append(_fila_campos([("Fecha de Entrega:", _fecha(pedido.get("fecha_entrega")), 80),
+                                   ("Horario de Entrega:", pedido.get("horario_entrega"), 88),
+                                   ("Atención:", pedido.get("atencion"), 46)]))
+        story.append(_fila_campos([("Teléfono:", pedido.get("telefono_entrega"), 48),
+                                   ("eMail:", pedido.get("email_entrega"), 80)]))
+        story.append(_fila_campos([("Notas:", pedido.get("notas_entrega"), 40)], ancho_total=ANCHO - 20))
+        story.append(Spacer(1, 6))
+
+    # ---- Datos de facturación (solo si se pidieron o traen datos) ----
+    if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS):
+        story.append(_p("DATOS DE FACTURACIÓN", ST_SEC))
+        story.append(_fila_campos([("Enviar Constancia de Situación Fiscal a:", CORREO_CONSTANCIA, 168),
+                                   ("Uso CFDI:", pedido.get("uso_cfdi"), 46)]))
+        story.append(_fila_campos([("Concepto:", pedido.get("concepto"), 48)]))
+        story.append(_fila_campos([("Teléfono:", pedido.get("telefono_facturacion"), 48),
+                                   ("eMail:", pedido.get("email_facturacion"), 80)]))
+        story.append(_fila_campos([("Notas:", pedido.get("notas_facturacion"), 40)], ancho_total=ANCHO - 20))
+        story.append(Spacer(1, 6))
 
     # ---- Tabla de productos ----
     filas = [[_p("Modelo", ST_TH), _p("Descripción", ST_TH), _p("Precio Unitario", ST_TH),
@@ -375,12 +400,21 @@ def generar_pdf_pedido(pedido, items, vendedores):
             continue
         precio = _num(it.get("precio_unitario"))
         linea = precio * cant
+        dpc = _num(it.get("descuento_pct"))
+        desc_txt = escape(str(it.get("descripcion") or ""))
+        if dpc > 0:
+            # descuento por producto: el total del renglón ya va con descuento
+            linea = _num(it.get("total_linea"), round(linea * (1 - dpc / 100.0)))
+            desc_txt += f"<br/><font size='7'><i>Descuento -{dpc:g}%</i></font>"
         bruto += linea
-        filas.append([_p(modelo, ST_CELL_C), _p(it.get("descripcion") or "", ST_CELL),
+        filas.append([_p(modelo, ST_CELL_C), Paragraph(desc_txt, ST_CELL),
                       _p(_dinero(precio), ST_CELL_R), _p(cant, ST_CELL_C), _p(_dinero(linea), ST_CELL_R)])
     if sin_precios:
         bruto = _num(pedido.get("total"))          # sin precios por pieza: el lote vale lo que el pedido
-    n_vacias = max(0, FILAS_MINIMAS - len(items))
+    # Filas en blanco: menos cuando entran las secciones de entrega / facturación, para que todo quepa en una hoja
+    n_sec = (1 if _mostrar_seccion(pedido, "requiere_entrega", ENTREGA_CAMPOS) else 0) + \
+            (1 if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS) else 0)
+    n_vacias = max(0, (FILAS_MINIMAS + 3 - 3 * n_sec) - len(items))
     for _ in range(n_vacias):
         filas.append(["", "", "", "", ""])
     alturas = [24, 17] + [None] * len(items) + [20] * n_vacias
@@ -415,8 +449,10 @@ def generar_pdf_pedido(pedido, items, vendedores):
     sup.hAlign = "RIGHT"
 
     inf, negritas = [], []
-    if desc_pct > 0 or con_iva:
-        inf.append(("IMPORTE" if (con_iva and desc_pct > 0) else "SUBTOTAL", _dinero(bruto), False))
+    if desc_pct > 0:
+        inf.append(("IMPORTE" if con_iva else "SUBTOTAL", _dinero(bruto), False))
+    elif con_iva:
+        inf.append(("SUBTOTAL", _dinero(_num(pedido.get("subtotal"))), False))
     if desc_pct > 0:
         inf.append((f"Descuento -{desc_pct:g}%", "-" + _dinero(descuento_monto), False))
     if con_iva:
@@ -463,13 +499,49 @@ def generar_pdf_pedido(pedido, items, vendedores):
                                ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
 
     story.append(KeepTogether([sup, notas_tot, Spacer(1, 10), abajo]))
+    return story
+
+
+class _MarcaCopia(Flowable):
+    """No dibuja nada: solo anota qué copia se está imprimiendo (ORIGINAL / COPIA CLIENTE) para el rótulo de la hoja."""
+    def __init__(self, estado, texto):
+        super().__init__()
+        self.estado, self.texto = estado, texto
+
+    def wrap(self, aw, ah):
+        return 0, 0
+
+    def draw(self):
+        self.estado["copia"] = self.texto
+
+
+def generar_pdf_pedido(pedido, items, vendedores, copias=None):
+    """PDF del pedido. `copias` = lista de rótulos (p. ej. ["ORIGINAL", "COPIA CLIENTE"]): el pedido se repite
+    una vez por rótulo, cada copia en hojas nuevas y con su rótulo en la esquina. Sin `copias`: una sola, sin rótulo."""
+    estado = {"copia": None}
+    story = []
+    for n, rotulo in enumerate(copias or [None]):
+        if n:
+            story.append(PageBreak())
+        if rotulo:
+            story.append(_MarcaCopia(estado, rotulo))
+        story += _story_pedido(pedido, items, vendedores)
 
     buf = io.BytesIO()
-    pie, marca = _hacer_pie(pedido)
+    pie, marca = _hacer_pie(dict(pedido, _sin_hoja=True) if copias and len(copias) > 1 else pedido)
+
+    def fin_hoja(c, doc):
+        marca(c, doc)
+        if estado["copia"]:
+            c.saveState()
+            c.setFont("Helvetica-Bold", 9)
+            c.drawRightString(letter[0] - MARGEN, letter[1] - 16, estado["copia"])
+            c.restoreState()
+
     doc = BaseDocTemplate(buf, pagesize=letter, title=f"Pedido {pedido.get('numero_pedido', '')}",
                           author="Viriathus", leftMargin=MARGEN, rightMargin=MARGEN)
     marco = Frame(MARGEN, 74, ANCHO, letter[1] - 74 - 28, id="marco",
                   leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
-    doc.addPageTemplates([PageTemplate(id="pagina", frames=[marco], onPage=pie, onPageEnd=marca)])
+    doc.addPageTemplates([PageTemplate(id="pagina", frames=[marco], onPage=pie, onPageEnd=fin_hoja)])
     doc.build(story)
     return buf.getvalue()
