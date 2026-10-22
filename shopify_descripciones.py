@@ -185,17 +185,17 @@ def _csv(filas):
 
 
 def render_traer_descripciones(supabase):
-    st.subheader("🛍️ Traer nombre y descripción de Shopify al inventario",
+    st.subheader("Traer nombre y descripción de Shopify al inventario",
                  help="Empareja cada producto de Shopify con el inventario por SKU = MODELO y copia el nombre y/o la "
                "descripción (texto plano: se pierden negritas y enlaces). Lo anterior del inventario se guarda en el "
                "mismo producto (NOMBRE_ANTERIOR / DESCRIPCION_ANTERIOR) y puedes descargar un respaldo.")
-    if st.button("🔍 Revisar Shopify", key="desc_revisar"):
+    if st.button("Revisar Shopify", key="desc_revisar"):
         with st.spinner("Leyendo productos de Shopify (puede tardar un poco)..."):
             try:
                 sh = productos_de_shopify()
                 plan, sin_inv = armar_plan(supabase, sh)
             except Exception as ex:
-                st.error(f"❌ No se pudo revisar: {ex}")
+                st.error(f"No se pudo revisar: {ex}")
                 return
         st.session_state["desc_plan"] = {"plan": plan, "sin_inv": sin_inv, "total": len(sh)}
 
@@ -261,9 +261,9 @@ def render_traer_descripciones(supabase):
     st.write(f"Se actualizarán **{n_nom}** nombres y **{n_des}** descripciones ({len(filas)} productos).")
     if not filas:
         return
-    st.download_button("⬇️ Descargar respaldo (CSV) de lo que se va a cambiar", _csv(filas),
+    st.download_button("Descargar respaldo (CSV) de lo que se va a cambiar", _csv(filas),
                        file_name="respaldo_nombre_descripcion.csv", mime="text/csv", key="desc_csv")
-    if st.button(f"✅ Aplicar a {len(filas)} productos", type="primary", key="desc_aplicar"):
+    if st.button(f"Aplicar a {len(filas)} productos", type="primary", key="desc_aplicar"):
         barra = st.progress(0.0)
         hechos, errores = aplicar_plan(supabase, filas, lambda n, t: barra.progress(n / t))
         st.success(f"Listo: {hechos} productos actualizados en el inventario.")

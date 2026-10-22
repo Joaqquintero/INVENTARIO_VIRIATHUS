@@ -12,13 +12,13 @@ import pandas as pd
 import streamlit as st
 
 from shopify_borrador import _gql
+from segundo_plano import TareaPeriodica
 from sync_shopify import sincronizar
 
 INTERVALO_SEG = 120
 
 
-@st.cache_data(ttl=INTERVALO_SEG, show_spinner=False)
-def _sync_cacheado(_sb):
+def _revisar(_sb):
     hora = dt.datetime.now().strftime("%H:%M")
     try:
         return {"ok": True, "resumen": sincronizar(_sb, _gql), "hora": hora}
@@ -31,9 +31,13 @@ def _sync_cacheado(_sb):
         return {"ok": False, "error": msg, "hora": hora}
 
 
+_TAREA = TareaPeriodica(_revisar, INTERVALO_SEG)
+
+
 def sincronizar_en_segundo_plano(sb):
-    """Devuelve el resultado de la última revisión (se repite cada INTERVALO_SEG segundos como máximo)."""
-    return _sync_cacheado(sb)
+    """Devuelve al instante el resultado de la última revisión; cada INTERVALO_SEG segundos lanza otra
+    en segundo plano sin hacer esperar la página."""
+    return _TAREA.obtener(sb)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -47,18 +51,21 @@ def aviso_pendiente(_sb):
 
 
 def render_ventas_shopify(sb):
-    st.subheader("🛒 Ventas de Shopify",
+    st.subheader("Ventas de Shopify",
                  help="Cuando un pedido de Shopify se paga, sus modelos se marcan como vendidos en el inventario; "
                "si el pedido se cancela o reembolsa, vuelven a disponible. La app lo revisa sola cada pocos minutos.")
     estado = sincronizar_en_segundo_plano(sb)
-    if estado["ok"]:
+    if estado.get("pendiente"):
+        st.caption("Revisando Shopify… recarga en unos segundos.")
+    elif estado["ok"]:
         r = estado["resumen"]
         st.caption(f"Última revisión: {estado['hora']} — {r['revisados']} pedidos revisados, {r['nuevos']} nuevos, "
                    f"{r['marcados']} modelos marcados, {r['liberados']} devueltos a disponible.")
     else:
         st.error(f"No se pudo revisar Shopify: {estado['error']}")
-    if st.button("🔄 Sincronizar ahora", key="sv_ahora"):
-        _sync_cacheado.clear()
+    if st.button("Sincronizar ahora", key="sv_ahora"):
+        with st.spinner("Revisando Shopify…"):
+            _TAREA.ejecutar_ahora(sb)
         aviso_pendiente.clear()
         st.rerun()
 
@@ -74,13 +81,13 @@ def render_ventas_shopify(sb):
     df["estado"] = ["Anulada" if c else "Vendida" for c in df["cancelada"]]
     tabla = df[["nombre", "creado", "cliente", "total", "modelos", "estado", "avisos", "nota", "revisado"]].rename(columns={
         "nombre": "PEDIDO", "creado": "FECHA", "cliente": "CLIENTE", "total": "TOTAL", "modelos": "MODELOS",
-        "estado": "ESTADO", "avisos": "⚠️ AVISOS", "nota": "NOTA", "revisado": "REVISADO"})
+        "estado": "ESTADO", "avisos": "AVISOS", "nota": "NOTA", "revisado": "REVISADO"})
     st.dataframe(tabla, use_container_width=True, hide_index=True)
 
     pendientes = df[df["avisos"].notna() & (~df["revisado"])]
     if len(pendientes):
         st.warning(f"{len(pendientes)} pedido(s) con avisos sin revisar.")
-        if st.button("✅ Marcar todos los avisos como revisados", key="sv_revisados"):
+        if st.button("Marcar todos los avisos como revisados", key="sv_revisados"):
             for oid in pendientes["order_id"]:
                 sb.table("shopify_ordenes").update({"revisado": True}).eq("order_id", oid).execute()
             aviso_pendiente.clear()

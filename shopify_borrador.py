@@ -60,7 +60,7 @@ def _descripcion_a_html(texto):
 
 def _esta_vendido(pdata):
     v = str(pdata.get("DISP", pdata.get("DISPONIBILIDAD", ""))).strip().lower()
-    return v == "v"
+    return v in ("v", "r")      # reservado por una cotización = agotado
 
 
 def _secret(nombre):

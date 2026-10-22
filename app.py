@@ -8,13 +8,14 @@ import re
 import math
 import hmac
 from shopify_borrador import crear_borrador_shopify, actualizar_producto_shopify, marcar_disponibilidad_shopify
-# Ventas en desarrollo: poner en True para mostrar la pestaña «🧾 Ventas» (y cargar ventas.py)
+# Ventas en desarrollo: poner en True para mostrar la pestaña «Ventas» (y cargar ventas.py)
 MOSTRAR_VENTAS = False
 if MOSTRAR_VENTAS:
     from ventas import render_ventas
 from shopify_descripciones import render_traer_descripciones
 from shopify_ventas import sincronizar_en_segundo_plano, aviso_pendiente, render_ventas_shopify
 from shopify_lista import render_lista_shopify
+from etiquetas import render_etiquetas
 from shopify_productos import (sincronizar_productos_en_segundo_plano, conflictos_pendientes, render_sync_productos,
                                registrar_envio, sincronizar_ficha)
 import time
@@ -22,11 +23,36 @@ from postgrest.exceptions import APIError
 
 
 # Configuración de la página
+_DIR_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_app")
+try:
+   from PIL import Image as _PILImage
+   _icono = _PILImage.open(os.path.join(_DIR_ASSETS, "favicon.png"))
+except Exception:
+   _icono = None
 st.set_page_config(
    page_title="Gestión de Inventario y Catálogo",
-   page_icon="📦",
+   page_icon=_icono,
    layout="wide"
 )
+
+# Estilo Viriathus (tema oscuro): Times New Roman, fondo gris carbón #272625, acentos beige #C4BD97, esquinas casi rectas y títulos en mayúsculas.
+# (Los colores base están en .streamlit/config.toml; aquí van solo los detalles que el tema no cubre.)
+st.markdown("""
+<style>
+.stApp *:not([data-testid="stIconMaterial"]):not(.material-icons):not([class*="material-symbols"]):not(svg):not(path) {
+    font-family: "Times New Roman", Times, serif;
+}
+h1, h2 { text-transform: uppercase; letter-spacing: .08em; font-weight: 400 !important; }
+h3, h4 { font-weight: 500 !important; }
+.stButton > button, .stDownloadButton > button, .stLinkButton > a, .stFormSubmitButton > button {
+    border-radius: 2px; border: 1px solid #C4BD97; letter-spacing: .03em;
+}
+.stTextInput input, .stNumberInput input, .stTextArea textarea, [data-baseweb="select"] > div { border-radius: 2px; }
+[data-testid="stVerticalBlockBorderWrapper"] { border-radius: 2px; }
+hr { border-color: #C4BD97 !important; }
+[data-testid="stSidebar"] { border-right: 1px solid #C4BD97; }
+</style>
+""", unsafe_allow_html=True)
 
 
 # ID principal de la carpeta 'master fotos' en Google Drive
@@ -111,9 +137,10 @@ USUARIOS = _cargar_usuarios()
 
 
 def login():
-   st.title("🔒 Acceso al Sistema de Inventario")
    col1, col2, col3 = st.columns([1, 2, 1])
    with col2:
+       _l1, _l2, _l3 = st.columns([1, 1, 1])
+       _l2.image(os.path.join(_DIR_ASSETS, "logo_escudo.png"), use_container_width=True)
        username = st.text_input("Usuario", key="login_user")
        password = st.text_input("Contraseña", type="password", key="login_pass")
        btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
@@ -156,7 +183,7 @@ def mostrar_calculado(label, valor, key, formula=None):
    st.text_input(label, value=txt, disabled=True,
                  placeholder="— pendiente —", key=f"{key}_{txt}")
    if formula:
-       st.caption(f"ℹ️ *{formula}*")
+       st.caption(f"*{formula}*")
 
 
 def num(v):
@@ -218,11 +245,11 @@ def ejecutar_script_python(nombre_script):
    try:
        resultado = subprocess.run([sys.executable, nombre_script], capture_output=True, text=True)
        if resultado.returncode == 0:
-           st.success(f"✅ Se ejecutó '{nombre_script}' con éxito.")
+           st.success(f"Se ejecutó '{nombre_script}' con éxito.")
            if resultado.stdout:
                st.code(resultado.stdout)
        else:
-           st.error(f"❌ Error al ejecutar '{nombre_script}':")
+           st.error(f"Error al ejecutar '{nombre_script}':")
            st.code(resultado.stderr)
    except Exception as e:
        st.error(f"Error al intentar llamar a {nombre_script}: {e}")
@@ -272,7 +299,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
   
    # --- SECCIÓN FOTO DE PORTADA EN ALTA / EDICIÓN ---
-   st.header("🖼️ FOTO DE PORTADA")
+   st.header("FOTO DE PORTADA")
    nueva_foto_manual = st.file_uploader(
        "Subir / Asignar foto de portada (.jpg, .png)",
        type=["jpg", "jpeg", "png", "webp"],
@@ -282,7 +309,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        st.image(nueva_foto_manual, caption="Vista previa de la portada a subir", width=250)
   
    st.divider()
-   st.header("📦 1. SECCIÓN PRODUCTO")
+   st.header("1. SECCIÓN PRODUCTO")
    col1, col2 = st.columns(2)
    with col1:
        if is_edit:
@@ -291,12 +318,12 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            modelo = st.text_input("MODELO *", value=str(datos_previos.get("MODELO", siguiente_modelo)), key=f"{prefix}_modelo").strip()
           
        nombre = st.text_input("NOMBRE", value=str(datos_previos.get("NOMBRE", "")), key=f"{prefix}_nombre")
-       st.caption(f"📏 CARACTERES DEL NOMBRE: **{len(nombre)}**")
+       st.caption(f"CARACTERES DEL NOMBRE: **{len(nombre)}**")
       
        descripcion = st.text_area("DESCRIPCIÓN / FICHA TÉCNICA", value=str(datos_previos.get("DESCRIPCION", "")), height=100, key=f"{prefix}_desc")
        cedula = st.text_area("CÉDULA CURATORIAL", value=str(datos_previos.get("CEDULA_CURATORIAL", "")), height=100, key=f"{prefix}_cedula")
-       st.caption(f"📏 CARACTERES CÉDULA CURATORIAL: **{len(cedula)}**")
-       with st.expander("🤖 Redactar con ChatGPT"):
+       st.caption(f"CARACTERES CÉDULA CURATORIAL: **{len(cedula)}**")
+       with st.expander("Redactar con ChatGPT"):
            if not nombre.strip():
                st.info("Escribe primero el NOMBRE del producto.")
            else:
@@ -310,7 +337,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
                st.caption("2️⃣ Abre el proyecto, pega el prompt y agrega la foto")
-               st.link_button("📂 Abrir mi proyecto en ChatGPT", PROYECTO_CHATGPT_URL,
+               st.link_button("Abrir mi proyecto en ChatGPT", PROYECTO_CHATGPT_URL,
                               use_container_width=True, key=f"{prefix}_ia_proj")
 
 
@@ -329,10 +356,12 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            peso = st.text_input("PESO (kg)", value=str(datos_previos.get("PESO", "")), key=f"{prefix}_peso")
 
 
-       disp_opts = ["Disponible (vacío)", "v - VENDIDO"]
-       disp_idx = 1 if str(datos_previos.get("DISPONIBILIDAD", "")).lower() == "v" or str(datos_previos.get("DISP", "")).lower() == "v" else 0
-       disp_sel = st.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp")
-       disponibilidad = "v" if "VENDIDO" in disp_sel else ""
+       disp_opts = ["Disponible (vacío)", "v - VENDIDO", "r - RESERVADO (cotización)"]
+       _disp_prev = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", "")) or "").strip().lower()
+       disp_idx = {"v": 1, "r": 2}.get(_disp_prev, 0)
+       disp_sel = st.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp",
+                               help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
+       disponibilidad = "v" if "VENDIDO" in disp_sel else ("r" if "RESERVADO" in disp_sel else "")
 
 
        ubicacion_opts = ["1 - Showroom", "2 - Santa Fe", "3 - Antara", "4 - Lilly", "5 - Bodega"]
@@ -358,7 +387,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
        observaciones = st.text_area(
-           "📝 OBSERVACIONES (uso interno)",
+           "OBSERVACIONES (uso interno)",
            value=str(datos_previos.get("OBSERVACIONES", "")),
            height=100,
            placeholder="Notas internas, recordatorios, pendientes…",
@@ -368,7 +397,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
    st.divider()
-   st.header("🛒 2. SECCIÓN VENTA")
+   st.header("2. SECCIÓN VENTA")
    cv1, cv2, cv3 = st.columns(3)
    with cv1:
        num_pedido = st.text_input("NÚMERO DE PEDIDO", value=str(datos_previos.get("NUMERO_PEDIDO", "")), key=f"{prefix}_npedido")
@@ -382,7 +411,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
    st.divider()
-   st.header("🏷️ 3. SECCIÓN COMPRA")
+   st.header("3. SECCIÓN COMPRA")
    pago_opts = ["1 - EFECTIVO", "2 - TRANSFERENCIA"]
    pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY"]
 
@@ -438,15 +467,15 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        })
 
 
-   if st.button("➕ Añadir otro restaurador", key=f"{prefix}_btn_add_rest"):
+   if st.button("Añadir otro restaurador", key=f"{prefix}_btn_add_rest"):
        st.session_state[num_rest_key] += 1
        st.rerun()
 
 
    st.divider()
-   st.header("💵 4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
+   st.header("4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
    # ---------- COSTOS BASE (manuales) ----------
-   st.subheader("📥 Registro de Costos Base")
+   st.subheader("Registro de Costos Base")
    col_c1, col_c2, col_c3 = st.columns(3)
    with col_c1:
        v_costo_adq = st.text_input("COSTO ADQUISICION ($)", value=str(datos_previos.get("COSTO_ADQUISICION", "")), key=f"{prefix}_c_adq")
@@ -476,7 +505,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    col_show, col_cp = st.columns(2)
    # ---------- SHOWROOM ----------
    with col_show:
-       st.subheader("🏛️ SHOWROOM")
+       st.subheader("SHOWROOM")
        # Los espacios se crean en el orden en que se VEN y se llenan en el orden en que se CALCULAN,
        # así UTILIDAD BRUTA (manual) queda abajo aunque los campos de arriba dependan de ella.
        (c_sub, c_pci, c_iva, c_ub, c_psi,
@@ -502,7 +531,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        with c_red:
            v_red_sh = st.text_input("REDONDEO SHOWROOM ($)", value=str(datos_previos.get("REDONDEO_SHOWROOM", "")), key=f"{prefix}_red_sh")
            if ok(precio_sh_con_iva):
-               st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(precio_sh_con_iva):,.2f}**")
+               st.caption(f"Sugerido por regla de redondeo: **${aplicar_regla_redondeo(precio_sh_con_iva):,.2f}**")
        redondeo_sh = to_float(v_red_sh) if hay(v_red_sh) else None
        com_int_sin_iva = (precio_com_int - subtotal) if ok(precio_com_int, subtotal) else None
        with c_cisi:
@@ -522,7 +551,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                              "COMISION INTERIORISTA SIN IVA + UTILIDAD VIRIATHUS SIN IVA")
    # ---------- CASA PALACIO ----------
    with col_cp:
-       st.subheader("🏰 CASA PALACIO / C/P")
+       st.subheader("CASA PALACIO / C/P")
        factor_viriathus = st.number_input("FACTOR VIRIATHUS", value=float(to_float(datos_previos.get("FACTOR_VIRIATHUS", 1.4), 1.4)),
                                           min_value=0.0, step=0.05, format="%.2f", key=f"{prefix}_factor_vir")
        ptv_sin_iva = ((utilidad_bruta * factor_viriathus) + total_costo) if ok(utilidad_bruta, total_costo) else None
@@ -540,7 +569,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        v_pvcp_red = st.text_input("PRECIO DE VENTA CASA PALACIO CON IVA REDONDEADO ($)",
                                   value=str(datos_previos.get("CP_PRECIO_REDONDEADO", "")), key=f"{prefix}_pvcp_red")
        if ok(pvcp_iva):
-           st.caption(f"💡 Sugerido por regla de redondeo: **${aplicar_regla_redondeo(pvcp_iva):,.2f}**")
+           st.caption(f"Sugerido por regla de redondeo: **${aplicar_regla_redondeo(pvcp_iva):,.2f}**")
        pvcp_red = to_float(v_pvcp_red) if hay(v_pvcp_red) and to_float(v_pvcp_red) > 0 else None   # 0 = sin precio de C/P
        cp_sin_iva = (pvcp_red / 1.16) if ok(pvcp_red) else None
        mostrar_calculado("C/P PRECIO SIN IVA ($)", cp_sin_iva, f"{prefix}_cp_sin_iva",
@@ -559,9 +588,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
    st.divider()
-   if st.button("🚀 Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
+   if st.button("Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
        if not modelo:
-           st.error("❌ El campo MODELO es obligatorio.")
+           st.error("El campo MODELO es obligatorio.")
            return
 
        # En alta, no permitir sobrescribir un modelo que ya existe
@@ -569,10 +598,10 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            try:
                existe = supabase.table("productos").select("MODELO").eq("MODELO", modelo).limit(1).execute()
                if existe.data:
-                   st.error(f"❌ El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
+                   st.error(f"El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
                    return
            except Exception as ex_chk:
-               st.error(f"❌ No se pudo verificar si el modelo ya existe: {ex_chk}")
+               st.error(f"No se pudo verificar si el modelo ya existe: {ex_chk}")
                return
 
 
@@ -588,7 +617,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                        file_options={"content-type": "image/jpeg", "upsert": "true"}
                    )
                except Exception as ex_foto:
-                   st.error(f"❌ No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
+                   st.error(f"No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
                    return
 
 
@@ -643,9 +672,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            except Exception:
                pass
            if is_edit:
-               st.success(f"🎉 ¡Producto '{modelo}' actualizado correctamente!")
+               st.success(f"¡Producto '{modelo}' actualizado correctamente!")
                # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
-               vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() == "v"
+               vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() in ("v", "r")
                with st.spinner("Actualizando Shopify..."):
                    # El nombre y la descripción solo se mandan a Shopify si los cambiaste en esta ficha (y no están vacíos)
                    desc_cambio = (descripcion.strip() != "" and
@@ -660,24 +689,24 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                    if est_sh == "ok":
                        registrar_envio(supabase, modelo, datos_guardar,
                                        [c for c, f in (("nombre", nombre_cambio), ("desc", desc_cambio), ("precio", precio_cambio)) if f])
-                   if est_sh == "ok" and (disponibilidad == "v") != vendido_antes:
-                       est_sh2, msg_sh2 = marcar_disponibilidad_shopify(modelo, disponibilidad == "v")
+                   if est_sh == "ok" and (disponibilidad in ("v", "r")) != vendido_antes:
+                       est_sh2, msg_sh2 = marcar_disponibilidad_shopify(modelo, disponibilidad in ("v", "r"))
                        if est_sh2 == "error":
                            est_sh, msg_sh = "error", msg_sh2
                        else:
                            msg_sh = msg_sh + " " + msg_sh2
                if est_sh == "ok":
-                   st.info("🛍️ " + msg_sh)
+                   st.info("" + msg_sh)
                elif est_sh == "error":
-                   st.warning("🛍️ Se guardó en el inventario, pero NO en Shopify: " + msg_sh +
-                              " Puedes reintentarlo con 🔄 Sincronizar con Shopify en la ficha.")
+                   st.warning("Se guardó en el inventario, pero NO en Shopify: " + msg_sh +
+                              " Puedes reintentarlo con Sincronizar con Shopify en la ficha.")
            else:
                # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
                st.session_state["alta_version"] = version_alta + 1
-               st.session_state["alta_aviso_ok"] = f"🎉 ¡Producto '{modelo}' guardado correctamente! Ya puedes capturar el siguiente."
+               st.session_state["alta_aviso_ok"] = f"¡Producto '{modelo}' guardado correctamente! Ya puedes capturar el siguiente."
                st.rerun()
        else:
-           st.error(f"❌ El producto '{modelo}' NO se guardó: {error_guardado} "
+           st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
                     "Corrige el problema y vuelve a tocar Guardar; el formulario conserva tus datos.")
 
 
@@ -690,7 +719,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 # --- MENÚ Y NAVEGACIÓN ---
 with st.sidebar:
-   st.title("📦 Menú Principal")
+   st.image(os.path.join(_DIR_ASSETS, "logo_largo.png"), use_container_width=True)
    st.write(f"**Usuario:** {user['nombre']}")
    st.write(f"**Rol:** `{user['role']}`")
    st.divider()
@@ -702,50 +731,56 @@ with st.sidebar:
    # Ventas de Shopify -> inventario (revisa Shopify como máximo cada 2 minutos)
    _sync = sincronizar_en_segundo_plano(supabase)
    if _sync.get("pendiente"):
-       st.caption("🛒 Revisando Shopify…")
+       st.caption("Revisando Shopify…")
    elif _sync["ok"]:
-       st.caption(f"🛒 Shopify revisado a las {_sync['hora']}")
+       st.caption(f"Shopify revisado a las {_sync['hora']}")
    else:
-       st.warning(f"🛒 No se pudo revisar Shopify: {_sync['error']}")
+       st.warning(f"No se pudo revisar Shopify: {_sync['error']}")
+   # Cotizaciones vencidas -> los productos reservados vuelven a estar disponibles (en segundo plano, cada 5 min)
+   try:
+       from cotizaciones import revisar_vencimientos
+       revisar_vencimientos(supabase)
+   except Exception:
+       pass          # si aún no están las tablas de cotizaciones, no pasa nada
    if user["role"] in ["Administrador", "Inventario"]:
        # Nombre, descripción y precio: se mantienen iguales en inventario y Shopify (revisa como máximo cada 5 min)
        _sync_p = sincronizar_productos_en_segundo_plano(supabase)
        if _sync_p.get("pendiente"):
-           st.caption("🔁 Revisando productos…")
+           st.caption("Revisando productos…")
        elif _sync_p["ok"]:
-           st.caption(f"🔁 Productos sincronizados a las {_sync_p['hora']}")
+           st.caption(f"Productos sincronizados a las {_sync_p['hora']}")
        else:
-           st.warning(f"🔁 No se pudo sincronizar productos: {_sync_p['error']}")
+           st.warning(f"No se pudo sincronizar productos: {_sync_p['error']}")
 
 
-st.title("🔍 Buscador e Inventario de Productos")
+st.title("Buscador e Inventario de Productos")
 if user["role"] in ["Administrador", "Inventario"]:
    _conf = conflictos_pendientes(supabase)
    if _conf:
-       st.warning(f"🔁 {len(_conf)} producto(s) con cambios distintos en el inventario y en Shopify. "
-                  "Ve a «⚡ Herramientas & Scripts» → «Sincronización de productos» para elegir cuál se queda.")
+       st.warning(f"{len(_conf)} producto(s) con cambios distintos en el inventario y en Shopify. "
+                  "Ve a «Herramientas & Scripts» → «Sincronización de productos» para elegir cuál se queda.")
    _avisos_shop = aviso_pendiente(supabase)
    if _avisos_shop:
-       st.warning(f"🛒 {len(_avisos_shop)} venta(s) de Shopify con avisos por revisar (posible doble venta o SKU sin inventario). "
-                  "Ve a «⚡ Herramientas & Scripts» → «Ventas de Shopify».")
-_nombres_tabs = ["🔎 Consultar / Buscar", "➕ Alta Manual", "⚡ Herramientas & Scripts", "🛍️ Shopify"]
+       st.warning(f"{len(_avisos_shop)} venta(s) de Shopify con avisos por revisar (posible doble venta o SKU sin inventario). "
+                  "Ve a «Herramientas & Scripts» → «Ventas de Shopify».")
+_nombres_tabs = ["Consultar / Buscar", "Alta Manual", "Herramientas & Scripts", "Shopify"]
 if MOSTRAR_VENTAS:
-    _nombres_tabs.append("🧾 Ventas")
+    _nombres_tabs.append("Ventas")
 _tabs = st.tabs(_nombres_tabs)
 tab1, tab2, tab3, tab5 = _tabs[:4]
 tab4 = _tabs[4] if MOSTRAR_VENTAS else None
 
 
 # DIÁLOGO DE EDICIÓN EN MODAL
-@st.dialog("✏️ Editar Producto Completo", width="large")
+@st.dialog("Editar Producto Completo", width="large")
 def modal_editar_completo(mod_p, pdata):
    st.caption(f"Gestión y edición del modelo: **{mod_p}**")
   
    # Opción para cambiar foto
-   with st.expander("🖼️ Cambiar / Subir Foto de Portada"):
+   with st.expander("Cambiar / Subir Foto de Portada"):
        nueva_foto = st.file_uploader("Selecciona una imagen (.jpg, .png)", type=["jpg", "jpeg", "png", "webp"], key=f"uploader_{mod_p}")
        if nueva_foto is not None:
-           if st.button("🚀 Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
+           if st.button("Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
                with st.spinner("Subiendo imagen..."):
                    try:
                        bytes_img = nueva_foto.read()
@@ -758,25 +793,25 @@ def modal_editar_completo(mod_p, pdata):
                        sb_url = st.secrets.get("SUPABASE_URL", "")
                        url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
                        supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
-                       st.success("✅ ¡Foto actualizada!")
+                       st.success("¡Foto actualizada!")
                        st.rerun()
                    except Exception as ex_foto:
-                       st.error(f"❌ Error: {ex_foto}")
+                       st.error(f"Error: {ex_foto}")
 
 
    # Opción para eliminar
-   with st.expander("⚠️ Zona de Peligro: Eliminar Producto"):
+   with st.expander("Zona de Peligro: Eliminar Producto"):
        st.warning("Esta acción borrará el producto permanentemente de Supabase.")
        confirm_del = st.checkbox("Confirmo que deseo eliminarlo", key=f"check_del_{mod_p}")
        if confirm_del:
-           if st.button("🗑️ Eliminar Producto Definitivamente", type="primary", use_container_width=True, key=f"btn_confirm_del_{mod_p}"):
+           if st.button("Eliminar Producto Definitivamente", type="primary", use_container_width=True, key=f"btn_confirm_del_{mod_p}"):
                with st.spinner("Eliminando..."):
                    try:
                        supabase.table("productos").delete().eq("MODELO", mod_p).execute()
                        st.success(f"Producto {mod_p} eliminado.")
                        st.rerun()
                    except Exception as ex_del:
-                       st.error(f"❌ Error al eliminar: {ex_del}")
+                       st.error(f"Error al eliminar: {ex_del}")
 
 
    st.divider()
@@ -858,11 +893,11 @@ with tab1:
            with col_pag:
                c_prev, c_next = st.columns(2)
                with c_prev:
-                   if st.button("⬅️ Anterior", disabled=(pagina == 0), key="btn_prev_top", use_container_width=True):
+                   if st.button("Anterior", disabled=(pagina == 0), key="btn_prev_top", use_container_width=True):
                        st.session_state["pagina_actual"] -= 1
                        st.rerun()
                with c_next:
-                   if st.button("Siguiente ➡️", disabled=(pagina >= total_paginas - 1), key="btn_next_top", use_container_width=True):
+                   if st.button("Siguiente ", disabled=(pagina >= total_paginas - 1), key="btn_next_top", use_container_width=True):
                        st.session_state["pagina_actual"] += 1
                        st.rerun()
 
@@ -885,7 +920,8 @@ with tab1:
                    pdata = raw_json if isinstance(raw_json, dict) else {}
               
                disp_val = str(pdata.get("DISP", pdata.get("DISPONIBILIDAD", ""))).strip().lower()
-               is_vendido = (disp_val == "v")
+               is_reservado = (disp_val == "r")
+               is_vendido = (disp_val in ("v", "r"))      # para Shopify, reservado = agotado
               
                col_actual = cols[idx % cols_por_fila]
                with col_actual:
@@ -894,29 +930,43 @@ with tab1:
                            try:
                                st.image(img_url, use_container_width=True)
                            except Exception:
-                               st.caption("🖼️ Sin imagen asignada")
+                               st.caption("Sin imagen asignada")
                        else:
-                           st.caption("🖼️ Sin imagen asignada")
+                           st.caption("Sin imagen asignada")
                       
                        st.markdown(f"### *{mod_p}*")
                        st.write(f"*{pdata.get('NOMBRE', 'Sin Nombre')}*")
                       
-                       if is_vendido:
-                           st.error("🔴 Estado: VENDIDO")
+                       if is_reservado:
+                           st.warning("Estado: RESERVADO (cotización)")
+                       elif is_vendido:
+                           st.error("Estado: VENDIDO")
                        else:
-                           st.success("🟢 Estado: DISPONIBLE")
+                           st.success("Estado: DISPONIBLE")
                           
-                       st.write(f"📍 *Ubicación:* {pdata.get('UBICACION', 'N/A')}")
-                       st.write(f"🏷️ *Categoría:* {pdata.get('CATEGORIA', 'N/A')}")
-                       st.write(f"💵 *Redondeo Showroom:* ${to_float(pdata.get('REDONDEO_SHOWROOM', 0)):,.2f}")
+                       st.write(f"*Ubicación:* {pdata.get('UBICACION', 'N/A')}")
+                       st.write(f"*Categoría:* {pdata.get('CATEGORIA', 'N/A')}")
+                       st.write(f"*Redondeo Showroom:* ${to_float(pdata.get('REDONDEO_SHOWROOM', 0)):,.2f}")
                       
+                       # Descripción, cédula curatorial y medidas: las ve cualquier rol (sin costos)
+                       with st.expander("Descripción, cédula y medidas"):
+                           _desc = str(pdata.get("DESCRIPCION", "") or "").strip()
+                           _ced = str(pdata.get("CEDULA_CURATORIAL", "") or "").strip()
+                           st.markdown("**Descripción**")
+                           st.write(_desc or "—")
+                           st.markdown("**Cédula curatorial**")
+                           st.write(_ced or "—")
+                           _med = [f"{etq} {pdata.get(c)}" for c, etq in (("ALTO", "Alto"), ("LARGO", "Largo"), ("ANCHO_PROF", "Ancho/Prof.")) if str(pdata.get(c, "") or "").strip()]
+                           st.markdown("**Medidas**")
+                           st.write((" · ".join(_med) + " cm") if _med else "—")
+
                        url_drive = f"https://drive.google.com/drive/folders/{ID_MASTER_FOTOS}?q={mod_p}"
-                       st.link_button("📂 Fotos en Google Drive", url_drive, use_container_width=True, key=f"drive_btn_{mod_p}_{idx}")
+                       st.link_button("Fotos en Google Drive", url_drive, use_container_width=True, key=f"drive_btn_{mod_p}_{idx}")
                       
                        if user["role"] in ["Administrador", "Inventario"]:
-                           if st.button("✏️ Editar Ficha Completa", use_container_width=True, key=f"btn_edit_{mod_p}_{idx}"):
+                           if st.button("Editar Ficha Completa", use_container_width=True, key=f"btn_edit_{mod_p}_{idx}"):
                                modal_editar_completo(mod_p, pdata)
-                           if st.button("🔄 Sincronizar con Shopify", use_container_width=True, key=f"btn_sync_{mod_p}_{idx}",
+                           if st.button("Sincronizar con Shopify", use_container_width=True, key=f"btn_sync_{mod_p}_{idx}",
                                         help="Revisa este producto contra Shopify (nombre, descripción, precio) y su disponibilidad, y copia lo que haya cambiado hacia donde corresponda."):
                                with st.spinner("Sincronizando con Shopify..."):
                                    est_s, msg_s = sincronizar_ficha(supabase, mod_p, is_vendido)
@@ -926,7 +976,7 @@ with tab1:
                                    st.info("Este producto aún no está en Shopify: usa «Crear borrador en Shopify».")
                                else:
                                    st.warning(msg_s)
-                           if st.button("🛍️ Crear borrador en Shopify", use_container_width=True, key=f"btn_shop_{mod_p}_{idx}"):
+                           if st.button("Crear borrador en Shopify", use_container_width=True, key=f"btn_shop_{mod_p}_{idx}"):
                                with st.spinner("Enviando a Shopify..."):
                                    ok, mensaje, url_shop = crear_borrador_shopify(mod_p, pdata)
                                if ok:
@@ -945,17 +995,17 @@ with tab1:
            with c_bot_pag:
                cp1, cp2 = st.columns(2)
                with cp1:
-                   if st.button("⬅️ Anterior", disabled=(pagina == 0), key="btn_prev_bot", use_container_width=True):
+                   if st.button("Anterior", disabled=(pagina == 0), key="btn_prev_bot", use_container_width=True):
                        st.session_state["pagina_actual"] -= 1
                        st.rerun()
                with cp2:
-                   if st.button("Siguiente ➡️", disabled=(pagina >= total_paginas - 1), key="btn_next_bot", use_container_width=True):
+                   if st.button("Siguiente ", disabled=(pagina >= total_paginas - 1), key="btn_next_bot", use_container_width=True):
                        st.session_state["pagina_actual"] += 1
                        st.rerun()
        else:
            st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
    else:
-       st.info("💡 Escribe un modelo o palabra clave para buscar productos.")
+       st.info("Escribe un modelo o palabra clave para buscar productos.")
       
 # TAB 2: ALTA MANUAL
 with tab2:
@@ -968,24 +1018,24 @@ with tab2:
 # TAB 3: SCRIPTS
 with tab3:
    if user["role"] in ["Administrador", "Inventario"]:
-       st.header("⚡ Ejecución de Scripts y Carga Automática")
+       st.header("Ejecución de Scripts y Carga Automática")
        col_s1, col_s2, col_s3 = st.columns(3)
        with col_s1:
            with st.container(border=True):
-               st.subheader("📊 Cargar Excel")
-               if st.button("🚀 Ejecutar cargar_excel.py", use_container_width=True, type="primary"):
+               st.subheader("Cargar Excel")
+               if st.button("Ejecutar cargar_excel.py", use_container_width=True, type="primary"):
                    with st.spinner("Procesando Excel..."):
                        ejecutar_script_python("cargar_excel.py")
        with col_s2:
            with st.container(border=True):
-               st.subheader("🖼️ Extraer Imágenes")
-               if st.button("🚀 Ejecutar extraer_imagenes.py", use_container_width=True):
+               st.subheader("Extraer Imágenes")
+               if st.button("Ejecutar extraer_imagenes.py", use_container_width=True):
                    with st.spinner("Procesando fotos..."):
                        ejecutar_script_python("extraer_imagenes.py")
        with col_s3:
            with st.container(border=True):
-               st.subheader("🔄 Actualizar Stock")
-               if st.button("🚀 Ejecutar actualizar_stock.py", use_container_width=True):
+               st.subheader("Actualizar Stock")
+               if st.button("Ejecutar actualizar_stock.py", use_container_width=True):
                    with st.spinner("Sincronizando stock..."):
                        ejecutar_script_python("actualizar_stock.py")
        st.divider()
@@ -997,6 +1047,9 @@ with tab3:
        st.divider()
        with st.container(border=True):
            render_ventas_shopify(supabase)
+       st.divider()
+       with st.container(border=True):
+           render_etiquetas(supabase)
 
 
 # TAB 4: VENTAS

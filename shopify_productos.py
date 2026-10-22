@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from shopify_borrador import _gql, actualizar_producto_shopify, marcar_disponibilidad_shopify
+from segundo_plano import TareaPeriodica
 from sync_productos import (registrar_snapshot, resolver_conflicto, sincronizar_productos,
                             sincronizar_un_producto, valores_inventario)
 
@@ -36,8 +37,7 @@ def _mensaje_error(ex):
     return msg
 
 
-@st.cache_data(ttl=INTERVALO_SEG, show_spinner=False)
-def _sync_cacheado(_sb):
+def _revisar(_sb):
     hora = dt.datetime.now().strftime("%H:%M")
     try:
         return {"ok": True, "resumen": sincronizar_productos(_sb, _gql, empujar), "hora": hora}
@@ -45,8 +45,12 @@ def _sync_cacheado(_sb):
         return {"ok": False, "error": _mensaje_error(ex), "hora": hora}
 
 
+_TAREA = TareaPeriodica(_revisar, INTERVALO_SEG)
+
+
 def sincronizar_productos_en_segundo_plano(sb):
-    return _sync_cacheado(sb)
+    """Último resultado al instante; la revisión corre en segundo plano cada INTERVALO_SEG segundos."""
+    return _TAREA.obtener(sb)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -101,12 +105,14 @@ def _fmt(campo, v):
 
 
 def render_sync_productos(sb):
-    st.subheader("🔁 Sincronización de productos con Shopify",
+    st.subheader("Sincronización de productos con Shopify",
                  help="Nombre, descripción y precio se mantienen iguales en el inventario y en Shopify: lo que cambias en un "
                "lado se copia al otro. Si cambias el mismo dato en los dos lados con valores distintos, no se toca "
                "nada y te pide elegir. Nunca se manda un dato vacío ni un precio en 0.")
     estado = sincronizar_productos_en_segundo_plano(sb)
-    if estado["ok"]:
+    if estado.get("pendiente"):
+        st.caption("Revisando Shopify… recarga en unos segundos.")
+    elif estado["ok"]:
         r = estado["resumen"]
         if r.get("inicial"):
             st.info("Primera vez: se marcó el punto de partida. Pulsa «Revisar TODOS los productos» para igualar lo que ya existe.")
@@ -119,11 +125,12 @@ def render_sync_productos(sb):
         st.error(f"No se pudo sincronizar: {estado['error']}")
 
     c1, c2 = st.columns(2)
-    if c1.button("🔄 Revisar cambios ahora", key="sp_ahora"):
-        _sync_cacheado.clear()
+    if c1.button("Revisar cambios ahora", key="sp_ahora"):
+        with st.spinner("Revisando Shopify…"):
+            _TAREA.ejecutar_ahora(sb)
         conflictos_pendientes.clear()
         st.rerun()
-    if c2.button("🔍 Revisar TODOS los productos (más lento)", key="sp_todos",
+    if c2.button("Revisar TODOS los productos (más lento)", key="sp_todos",
                  help="Compara todos los productos de Shopify con el inventario. Úsalo la primera vez y de vez en cuando."):
         barra = st.progress(0.0, text="Revisando productos…")
         try:
@@ -134,8 +141,8 @@ def render_sync_productos(sb):
             if r["errores"]:
                 st.warning("Errores: " + "; ".join(r["errores"][:5]))
         except Exception as ex:
-            st.error(f"❌ {_mensaje_error(ex)}")
-        _sync_cacheado.clear()
+            st.error(f"{_mensaje_error(ex)}")
+        _TAREA.ejecutar_ahora(sb)
         conflictos_pendientes.clear()
 
     try:
@@ -145,7 +152,7 @@ def render_sync_productos(sb):
     except Exception:
         conflictos = []
     if conflictos:
-        st.markdown("#### ⚠️ Conflictos por resolver")
+        st.markdown("#### Conflictos por resolver")
         st.caption("Estos datos cambiaron distinto en el inventario y en Shopify. Elige cuál se queda; el otro lado se actualiza.")
         for fila in conflictos[:50]:
             for campo, c in fila["conflicto"].items():

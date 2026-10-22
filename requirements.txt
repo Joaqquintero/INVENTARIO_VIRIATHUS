@@ -5,3 +5,4 @@ pillow
 openpyxl
 pandas
 reportlab 
+requests

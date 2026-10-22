@@ -65,7 +65,7 @@ def _tabla(_sb):
             "Precio inventario": _num(d.get("REDONDEO_SHOWROOM")),
             "Precio Shopify": p["precio"],
             "Stock Shopify": p["stock"],
-            "Inventario": "Vendido" if disp == "v" else "Disponible",
+            "Inventario": "Vendido" if disp == "v" else ("Reservado" if disp == "r" else "Disponible"),
             "Ver en Shopify": f"https://admin.shopify.com/store/{shop}/products/{p['id'].split('/')[-1]}",
         })
     filas.sort(key=lambda f: (len(f["MODELO"]), f["MODELO"]), reverse=True)
@@ -73,8 +73,8 @@ def _tabla(_sb):
 
 
 def render_lista_shopify(sb):
-    st.subheader("🛍️ Productos del inventario que están en Shopify")
-    if st.button("🔄 Actualizar lista", key="lista_shop_act"):
+    st.subheader("Productos del inventario que están en Shopify")
+    if st.button("Actualizar lista", key="lista_shop_act"):
         _tabla.clear()
     try:
         with st.spinner("Leyendo Shopify…"):

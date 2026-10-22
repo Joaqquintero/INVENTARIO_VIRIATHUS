@@ -1,0 +1,8 @@
+# Tema Viriathus OSCURO (gris carbón #272625 con beige #C4BD97). Va en la carpeta .streamlit junto a secrets.toml
+[theme]
+base = "dark"
+primaryColor = "#C4BD97"
+backgroundColor = "#272625"
+secondaryBackgroundColor = "#1E1D1C"
+textColor = "#F2EFE6"
+font = "serif"
