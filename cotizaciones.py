@@ -654,7 +654,7 @@ def tab_guardadas(sb, user):
     # ---- Acciones ----
     q_v, q_c = ("", "")
     if cot["estado"] in ("Vigente", "Vencida"):
-        st.markdown("**Para renovar, cancelar o editar, identifícate:**")
+        st.markdown("**Para renovar o editar, identifícate:**")
         q_v, q_c = codigos.pedir_identidad(sb, f"ctg_id_{cid}")
     if cot["estado"] == "Vigente":
         a1, a2 = st.columns(2)
@@ -681,7 +681,8 @@ def tab_guardadas(sb, user):
         with st.expander("Cancelar cotización"):
             st.caption("Los productos apartados vuelven a estar disponibles.")
             if st.checkbox("Sí, cancelar esta cotización", key=f"ctg_cc_{cid}"):
-                if st.button("Cancelar cotización", key=f"ctg_cancel_{cid}") and (quien := codigos.confirmar(sb, q_v, q_c)):
+                c_v, c_c = codigos.pedir_identidad(sb, f"ctg_idc_{cid}")      # el código, junto al botón
+                if st.button("Cancelar cotización", key=f"ctg_cancel_{cid}") and (quien := codigos.confirmar(sb, c_v, c_c)):
                     try:
                         ss["ctg_avisos"] = cancelar_cotizacion(sb, cot)
                         codigos.registrar(sb, quien, "Cotización cancelada", "cotizacion", cot["codigo"])
