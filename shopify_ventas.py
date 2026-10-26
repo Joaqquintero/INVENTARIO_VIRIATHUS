@@ -11,7 +11,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from shopify_borrador import _gql
+from shopify_borrador import _gql, marcar_disponibilidad_shopify
 from segundo_plano import TareaPeriodica
 from sync_shopify import sincronizar
 
@@ -21,13 +21,14 @@ INTERVALO_SEG = 120
 def _revisar(_sb):
     hora = dt.datetime.now().strftime("%H:%M")
     try:
-        return {"ok": True, "resumen": sincronizar(_sb, _gql), "hora": hora}
+        return {"ok": True, "resumen": sincronizar(_sb, _gql, poner_shopify=marcar_disponibilidad_shopify), "hora": hora}
     except Exception as ex:
-        msg = str(ex)
+        msg = original = str(ex)
         if "shopify_ordenes" in msg and ("does not exist" in msg or "PGRST205" in msg or "schema cache" in msg):
             msg = "Falta crear la tabla shopify_ordenes: corre ventas_shopify.sql en Supabase."
         elif "access" in msg.lower() and "denied" in msg.lower() or "read_orders" in msg:
-            msg = "Shopify no deja leer pedidos: agrega el permiso read_orders a tu app de Shopify."
+            msg = ("Shopify no deja leer pedidos (revisa los permisos de la app de Shopify). "
+                   f"Detalle de Shopify: {original[:300]}")
         return {"ok": False, "error": msg, "hora": hora}
 
 

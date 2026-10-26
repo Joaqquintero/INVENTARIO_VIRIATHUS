@@ -50,11 +50,24 @@ def _num(v, default=0.0):
         return default
 
 
+# Misma consulta sin el cliente: el nombre del cliente es «dato protegido» en Shopify y puede estar negado
+Q_ORDENES_SIN_CLIENTE = Q_ORDENES.replace("      customer { displayName }\n", "")
+
+
 def leer_ordenes(gql, horas):
     desde = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=horas)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        return _leer_ordenes(gql, desde, Q_ORDENES)
+    except RuntimeError as ex:
+        if "customer" not in str(ex).lower():
+            raise
+        return _leer_ordenes(gql, desde, Q_ORDENES_SIN_CLIENTE)   # sin nombre de cliente, pero sí las ventas
+
+
+def _leer_ordenes(gql, desde, consulta):
     ordenes, cursor = [], None
     while True:
-        d = gql(Q_ORDENES, {"q": f"updated_at:>={desde}", "cursor": cursor})["orders"]
+        d = gql(consulta, {"q": f"updated_at:>={desde}", "cursor": cursor})["orders"]
         ordenes += d["nodes"]
         if not d["pageInfo"]["hasNextPage"]:
             return sorted(ordenes, key=lambda o: o["createdAt"])
@@ -102,8 +115,9 @@ def _en_pedido_activo(sb, modelo):
     return None
 
 
-def sincronizar(sb, gql, horas=72, log=lambda *a: None):
-    """Procesa los pedidos de Shopify de las últimas `horas`. Devuelve un resumen (dict)."""
+def sincronizar(sb, gql, horas=720, log=lambda *a: None, poner_shopify=None):
+    """Procesa los pedidos de Shopify de las últimas `horas` (30 días). Devuelve un resumen (dict).
+    `poner_shopify(modelo, vendido)`: si se da, al anularse un pedido también regresa la pieza a 1 en Shopify."""
     ordenes = leer_ordenes(gql, horas)
     resumen = {"revisados": len(ordenes), "nuevos": 0, "marcados": 0, "liberados": 0, "avisos": 0}
     if not ordenes:
@@ -150,7 +164,7 @@ def sincronizar(sb, gql, horas=72, log=lambda *a: None):
             log(f"{o.get('name')}: marcados {marcados} avisos {avisos}")
 
         elif fila is not None and tipo == "anulada" and not fila.get("cancelada"):
-            devueltos, quedan = [], []
+            devueltos, quedan, err_shop = [], [], []
             otras = [f for f in sb.table("shopify_ordenes").select("order_id,modelos")
                      .eq("cancelada", False).neq("order_id", oid).execute().data]
             for sku in (fila.get("marcados") or []):
@@ -161,9 +175,20 @@ def sincronizar(sb, gql, horas=72, log=lambda *a: None):
                 if pedido:
                     quedan.append(f"{sku} (está en el pedido {pedido} de Ventas)")
                     continue
-                if _poner_disponibilidad(sb, sku, False) == "ok":
+                r = _poner_disponibilidad(sb, sku, False)
+                if r == "ok":
                     devueltos.append(sku)
+                # Shopify no siempre reabastece al cancelar: se deja en 1 para que coincida con el inventario
+                if r in ("ok", "ya_estaba") and poner_shopify:
+                    try:
+                        est, msg = poner_shopify(sku, False)
+                    except Exception as ex:
+                        est, msg = "error", str(ex)
+                    if est == "error":
+                        err_shop.append(f"{sku}: {msg}")
             nota = f"Anulado en Shopify. Devueltos a disponible: {', '.join(devueltos) or 'ninguno'}."
+            if err_shop:
+                nota += f" No se pudo regresar a 1 en Shopify: {'; '.join(err_shop)}."
             if quedan:
                 nota += f" Se dejaron vendidos: {'; '.join(quedan)}."
             sb.table("shopify_ordenes").update({"cancelada": True, "nota": nota}).eq("order_id", oid).execute()
@@ -200,6 +225,6 @@ def _gql_desde_entorno():
 if __name__ == "__main__":
     from supabase import create_client
     sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_KEY"])
-    horas = int(os.environ.get("SYNC_HORAS", "72"))
+    horas = int(os.environ.get("SYNC_HORAS", "720"))
     print(sincronizar(sb, _gql_desde_entorno(), horas, log=print))
     sys.exit(0)

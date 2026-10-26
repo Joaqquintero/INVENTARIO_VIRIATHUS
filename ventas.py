@@ -17,17 +17,20 @@ import pandas as pd
 import streamlit as st
 
 import codigos
+from caches import guardar_en_memoria
+from permisos import roles
 
 IVA_FACTOR = 1.16
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
          "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
 # Quién puede ver costos/utilidad, cancelar pedidos y ver comisiones
-ROLES_COSTOS = ("Administrador", "Inventario")
-ROLES_CANCELAR = ("Administrador", "Inventario", "Vendedor")
-ROLES_EDITAR = ("Administrador", "Inventario", "Vendedor")   # quién puede cambiar status / observaciones
-ROLES_COMISIONES = ("Administrador",)
-ROLES_RESUMEN = ("Administrador",)          # resumen mensual: solo el administrador
+# (se definen en permisos.py)
+ROLES_COSTOS = roles("ver_costos")
+ROLES_CANCELAR = roles("cancelar_pedidos")
+ROLES_EDITAR = roles("editar_pedidos")      # quién puede cambiar status / observaciones
+ROLES_COMISIONES = roles("comisiones")
+ROLES_RESUMEN = roles("resumen_mensual")
 
 
 # ----------------------------------------------------------------------
@@ -1067,6 +1070,24 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
 # ----------------------------------------------------------------------
 # PESTAÑA: PEDIDOS (consulta y cancelación)
 # ----------------------------------------------------------------------
+@guardar_en_memoria(ttl=30)
+def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite):
+    """Lista de pedidos (con memoria de 30 s; se borra sola al guardar cualquier cambio)."""
+    q = (_sb.table("pedidos")
+         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
+         .order("numero_pedido", desc=True).limit(limite))
+    if busq:
+        if busq.isdigit():
+            q = q.eq("numero_pedido", int(busq))
+        else:
+            q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
+    if filtro_status:
+        q = q.in_("status", list(filtro_status))
+    if sin_costo:
+        q = q.eq("costo_total", 0).neq("status", "Cancelado")
+    return q.execute().data
+
+
 def tab_pedidos(sb, user):
     ve_costos = user["role"] in ROLES_COSTOS
     puede_cancelar = user["role"] in ROLES_CANCELAR
@@ -1076,6 +1097,14 @@ def tab_pedidos(sb, user):
         st.success(msg)
     for aviso in st.session_state.pop("vp_avisos", []):
         st.warning(aviso)
+
+    # Captura rápida de costos (solo Administrador)
+    try:
+        from costos import captura_rapida_costos
+    except Exception as ex:
+        st.caption(f"Captura rápida de costos no disponible: {ex}")
+    else:
+        captura_rapida_costos(sb, user)
 
     busq = st.text_input("Buscar por N° de pedido o por cliente", key="vp_busq").strip()
 
@@ -1090,19 +1119,7 @@ def tab_pedidos(sb, user):
     hay_filtro = bool(busq or filtro_status or sin_costo)
     limite = 500 if hay_filtro else 50
 
-    q = (sb.table("pedidos")
-         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
-         .order("numero_pedido", desc=True).limit(limite))
-    if busq:
-        if busq.isdigit():
-            q = q.eq("numero_pedido", int(busq))
-        else:
-            q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
-    if filtro_status:
-        q = q.in_("status", filtro_status)
-    if sin_costo:
-        q = q.eq("costo_total", 0).neq("status", "Cancelado")
-    rows = q.execute().data
+    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, limite)
     if not rows:
         st.info("No hay pedidos para mostrar con ese filtro." if hay_filtro else "No hay pedidos para mostrar.")
         return
@@ -1411,6 +1428,16 @@ def tab_comisiones(sb, user):
 # PESTAÑA: RESUMEN MENSUAL (ventas sin IVA, costos y utilidad por mes)
 # ----------------------------------------------------------------------
 def resumen_mensual(sb, anio, solo_pagados=False):
+    """Resumen por mes (con memoria de 2 min; se borra sola al guardar cualquier cambio)."""
+    return _resumen_mensual_mem(sb, anio, solo_pagados)
+
+
+@guardar_en_memoria(ttl=120)
+def _resumen_mensual_mem(_sb, anio, solo_pagados):
+    return _resumen_mensual(_sb, anio, solo_pagados)
+
+
+def _resumen_mensual(sb, anio, solo_pagados=False):
     """Devuelve un DataFrame con una fila por mes (1-12) del año, sin pedidos cancelados."""
     filas, desde = [], 0
     while True:
@@ -1505,12 +1532,19 @@ def render_ventas(sb, user):
             secciones.insert(1, ("Cotizaciones", tab_cotizaciones))
     except Exception as ex:
         st.caption(f"Cotizaciones no disponible: {ex}")
+    try:
+        from facturar import ROLES_FACTURAR, tab_por_facturar
+        if user["role"] in ROLES_FACTURAR:
+            secciones.insert(secciones.index(("Pedidos", tab_pedidos)) + 1, ("Por facturar", tab_por_facturar))
+    except Exception as ex:
+        st.caption(f"Por facturar no disponible: {ex}")
     if user["role"] in ROLES_RESUMEN:
         secciones.append(("Resumen mensual", tab_resumen))
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))
-    if user["role"] == "Administrador":
+    if user["role"] in roles("codigos"):
         secciones.append(("Códigos", codigos.tab_codigos))
-    for tab, (_, funcion) in zip(st.tabs([n for n, _ in secciones]), secciones):
-        with tab:
-            funcion(sb, user)
+    # Solo se carga la sección elegida (con pestañas se cargaban todas en cada clic)
+    from navegacion import selector
+    elegida = selector([n for n, _ in secciones], "nav_ventas", "Sección de ventas")
+    dict(secciones)[elegida](sb, user)

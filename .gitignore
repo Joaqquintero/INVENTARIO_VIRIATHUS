@@ -5,3 +5,5 @@ imagenes/
 inventarios_excel/
 __pycache__/
 *.pyc
+ventas_excel/
+reporte_importacion.csv

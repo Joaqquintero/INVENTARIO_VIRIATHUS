@@ -35,6 +35,11 @@ class TareaPeriodica:
                 threading.Thread(target=self._ejecutar, args=(args,), daemon=True).start()
             return self._resultado or {"ok": True, "pendiente": True, "hora": "…"}
 
+    def invalidar(self):
+        """La próxima llamada a obtener() lanza una revisión nueva."""
+        with self._lock:
+            self._ultimo_inicio = 0.0
+
     def ejecutar_ahora(self, *args):
         """Revisión inmediata (la página espera): para los botones «Sincronizar ahora»."""
         with self._lock:

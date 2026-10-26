@@ -22,7 +22,8 @@ from segundo_plano import TareaPeriodica
 from ventas import (calcular, buscar_modelo, catalogo, _num, _nn, _parse, _mostrar_ultimo,
                     iniciar_conversion, tab_nuevo_pedido)
 
-ROLES_COTIZAR = ("Administrador", "Inventario", "Vendedor")
+from permisos import roles as _roles
+ROLES_COTIZAR = _roles("cotizar")
 DIAS_VIGENCIA = 3
 ESTADOS = ("Vigente", "Convertida", "Vencida", "Cancelada")
 ICONO = {}
@@ -798,8 +799,8 @@ def tab_cotizaciones(sb, user):
         tab_nuevo_pedido(sb, user, desde_cot=True)           # el mismo formulario de Nuevo pedido, ya lleno
         return
     _mostrar_ultimo("cot_top")
-    t_nueva, t_guardadas = st.tabs(["Nueva cotización", "Guardadas"])
-    with t_nueva:
+    from navegacion import selector
+    if selector(["Nueva cotización", "Guardadas"], "nav_cot", "Cotizaciones") == "Nueva cotización":
         tab_nueva(sb, user)
-    with t_guardadas:
+    else:
         tab_guardadas(sb, user)

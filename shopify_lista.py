@@ -9,6 +9,7 @@ import streamlit as st
 
 from shopify_borrador import _gql, _secret
 from sync_shopify import _num, _parse
+from segundo_plano import TareaPeriodica
 
 Q = """
 query($cursor: String) {
@@ -44,8 +45,7 @@ def _leer_shopify():
         cursor = d["pageInfo"]["endCursor"]
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def _tabla(_sb):
+def _calcular_tabla(_sb):
     shopify = _leer_shopify()
     por_sku = {p["sku"]: p for p in shopify}
     skus = list(por_sku)
@@ -69,18 +69,34 @@ def _tabla(_sb):
             "Ver en Shopify": f"https://admin.shopify.com/store/{shop}/products/{p['id'].split('/')[-1]}",
         })
     filas.sort(key=lambda f: (len(f["MODELO"]), f["MODELO"]), reverse=True)
-    return {"filas": filas, "solo_shopify": len(skus) - len(inventario), "hora": time.strftime("%H:%M")}
+    return {"ok": True, "filas": filas, "solo_shopify": len(skus) - len(inventario), "hora": time.strftime("%H:%M")}
+
+
+# Se lee en segundo plano cada 10 min: la página muestra al instante la última lista y nunca espera a Shopify
+_TAREA = TareaPeriodica(_calcular_tabla, 600)
+
+
+class _Compat:
+    """Para el código que hacía _tabla.clear(): ahora fuerza una lectura nueva en segundo plano."""
+    @staticmethod
+    def clear():
+        _TAREA.invalidar()
+
+
+_tabla = _Compat()
 
 
 def render_lista_shopify(sb):
     st.subheader("Productos del inventario que están en Shopify")
     if st.button("Actualizar lista", key="lista_shop_act"):
-        _tabla.clear()
-    try:
         with st.spinner("Leyendo Shopify…"):
-            r = _tabla(sb)
-    except Exception as ex:
-        st.error(f"No se pudo leer Shopify: {ex}")
+            _TAREA.ejecutar_ahora(sb)
+    r = _TAREA.obtener(sb)
+    if r.get("pendiente"):
+        st.info("Leyendo los productos de Shopify por primera vez… recarga en unos segundos.")
+        return
+    if r.get("ok") is False:
+        st.error(f"No se pudo leer Shopify: {r.get('error')}")
         return
     filas = r["filas"]
     if not filas:

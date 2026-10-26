@@ -74,6 +74,12 @@ def registrar(sb, vendedor, accion, entidad, referencia, detalle=""):
             "referencia": str(referencia), "detalle": str(detalle)[:500]}).execute()
     except Exception:
         pass
+    # Algo se guardó: se borra la memoria de corto plazo para que se vea el cambio al instante
+    try:
+        import caches
+        caches.limpiar()
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------------
