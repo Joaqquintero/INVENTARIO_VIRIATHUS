@@ -637,6 +637,8 @@ def tab_guardadas(sb, user):
     if p1.button("Preparar PDF para enviar", key=f"ctg_prep_{cid}"):
         with st.spinner("Armando el PDF (descarga las fotos)…"):
             try:
+                for k in [k for k in ss.keys() if str(k).startswith("ctg_pdf_")]:
+                    ss.pop(k, None)          # solo un PDF de cotización en memoria a la vez
                 ss[clave_pdf] = pdf_de_cotizacion(sb, cid)
             except Exception as ex:
                 st.error(f"No se pudo generar el PDF: {ex}")
