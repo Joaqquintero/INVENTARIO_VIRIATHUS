@@ -243,6 +243,30 @@ def ejecutar_script_python(nombre_script):
 # --- FORMULARIO PRINCIPAL ESTRUCTURADO ---
 
 
+def comprimir_foto(datos, lado_max=1600, calidad=85):
+   """Deja la foto liviana antes de subirla: gira según la orientación del celular, la reduce a máximo
+   `lado_max` px por lado y la guarda como JPEG de buena calidad (convierte PNG/WEBP de verdad a JPG).
+   Devuelve (bytes_jpeg, kb_antes, kb_despues)."""
+   import io
+   from PIL import Image, ImageOps
+   im = Image.open(io.BytesIO(datos))
+   im = ImageOps.exif_transpose(im)
+   if im.mode in ("RGBA", "LA", "P"):
+       im = im.convert("RGBA")
+       fondo = Image.new("RGB", im.size, (255, 255, 255))     # lo transparente queda blanco
+       fondo.paste(im, mask=im.split()[-1])
+       im = fondo
+   else:
+       im = im.convert("RGB")
+   im.thumbnail((lado_max, lado_max), Image.LANCZOS)
+   out = io.BytesIO()
+   im.save(out, "JPEG", quality=calidad, optimize=True, progressive=True)
+   nuevo = out.getvalue()
+   if len(nuevo) >= len(datos) and Image.open(io.BytesIO(datos)).format == "JPEG" and max(Image.open(io.BytesIO(datos)).size) <= lado_max:
+       nuevo = datos            # ya venía liviana: se deja como estaba
+   return nuevo, round(len(datos) / 1024), round(len(nuevo) / 1024)
+
+
 def guardar_producto_db(modelo_key, datos_dict):
    """Guarda o actualiza el producto correctamente en Supabase."""
    # Obtener la URL de Supabase de manera segura desde secrets
@@ -601,7 +625,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        if nueva_foto_manual is not None:
            with st.spinner("Subiendo foto de portada a Supabase Storage..."):
                try:
-                   bytes_img = nueva_foto_manual.read()
+                   bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto_manual.read())
                    nombre_remoto = f"{modelo}.jpg"
                    supabase.storage.from_("imagenes").upload(
                        path=nombre_remoto,
@@ -799,7 +823,7 @@ def modal_editar_completo(mod_p, pdata):
            if st.button("Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
                with st.spinner("Subiendo imagen..."):
                    try:
-                       bytes_img = nueva_foto.read()
+                       bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto.read())
                        nombre_remoto = f"{mod_p}.jpg"
                        supabase.storage.from_("imagenes").upload(
                            path=nombre_remoto,
@@ -809,7 +833,7 @@ def modal_editar_completo(mod_p, pdata):
                        sb_url = st.secrets.get("SUPABASE_URL", "")
                        url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
                        supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
-                       st.success("¡Foto actualizada!")
+                       st.success(f"¡Foto actualizada! ({kb_antes:,} KB → {kb_despues:,} KB)")
                        st.rerun()
                    except Exception as ex_foto:
                        st.error(f"Error: {ex_foto}")
