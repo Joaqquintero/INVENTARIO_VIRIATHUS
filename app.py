@@ -622,10 +622,12 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
        # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
+       info_foto = ""
        if nueva_foto_manual is not None:
            with st.spinner("Subiendo foto de portada a Supabase Storage..."):
                try:
                    bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto_manual.read())
+                   info_foto = f" Foto comprimida: {kb_antes:,} KB → {kb_despues:,} KB."
                    nombre_remoto = f"{modelo}.jpg"
                    supabase.storage.from_("imagenes").upload(
                        path=nombre_remoto,
@@ -688,7 +690,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            except Exception:
                pass
            if is_edit:
-               st.success(f"¡Producto '{modelo}' actualizado correctamente!")
+               st.success(f"¡Producto '{modelo}' actualizado correctamente!{info_foto}")
                # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
                vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() in ("v", "r")
                with st.spinner("Actualizando Shopify..."):
@@ -719,7 +721,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            else:
                # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
                st.session_state["alta_version"] = version_alta + 1
-               st.session_state["alta_aviso_ok"] = f"¡Producto '{modelo}' guardado correctamente! Ya puedes capturar el siguiente."
+               st.session_state["alta_aviso_ok"] = f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
                st.rerun()
        else:
            st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
@@ -770,6 +772,8 @@ with st.sidebar:
 
 
 st.title("Buscador e Inventario de Productos")
+if st.session_state.get("aviso_foto"):
+   st.success(st.session_state.pop("aviso_foto"))
 if puede(user, "herramientas"):
    _conf = conflictos_pendientes(supabase)
    if _conf:
@@ -833,7 +837,7 @@ def modal_editar_completo(mod_p, pdata):
                        sb_url = st.secrets.get("SUPABASE_URL", "")
                        url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
                        supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
-                       st.success(f"¡Foto actualizada! ({kb_antes:,} KB → {kb_despues:,} KB)")
+                       st.session_state["aviso_foto"] = f"Foto del modelo {mod_p} actualizada: {kb_antes:,} KB → {kb_despues:,} KB."
                        st.rerun()
                    except Exception as ex_foto:
                        st.error(f"Error: {ex_foto}")
