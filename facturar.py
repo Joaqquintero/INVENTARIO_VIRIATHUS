@@ -25,6 +25,7 @@ UNIDAD = "Pieza"
 IMPUESTO = "IVA 16%"
 TASA_IVA = Decimal("0.16")
 DESGLOSAR = "Desglosar productos"
+DESCRIPCION_ENVIO = "SERVICIO DE ENVÍO"
 CONCEPTOS = ["Accesorios de decoración", "Mobiliario de oficina", DESGLOSAR]
 from permisos import roles as _roles
 ROLES_FACTURAR = _roles("por_facturar")
@@ -86,6 +87,9 @@ def armar_partidas(pedidos, items_por_pedido, concepto_de, con_modelo=False):
             else:
                 grupos[concepto] = grupos.get(concepto, Decimal("0")) + total_linea
     filas = [{"cantidad": 1, "descripcion": c.upper(), "total": t} for c, t in grupos.items()] + desglose
+    envio = sum((_d(p.get("envio") or 0) for p in pedidos), Decimal("0"))
+    if envio > 0:      # el envío va como su propia partida (si son varios pedidos, una sola con la suma)
+        filas.append({"cantidad": 1, "descripcion": DESCRIPCION_ENVIO, "total": envio})
 
     partidas = []
     for f in filas:
@@ -247,11 +251,16 @@ def _pedidos_con_factura_mem(_sb, desde):
 
 def _pedidos_con_factura(sb, desde):
     """Todos los pedidos que llevan facturación (facturados o no), sin los cancelados."""
-    rows = (sb.table("pedidos")
-            .select("numero_pedido,fecha,cliente,total,concepto,uso_cfdi,email,telefono,email_facturacion,"
-                    "telefono_facturacion,notas_facturacion,status,estado_pedido,efectivo,no_factura")
-            .eq("requiere_facturacion", True).gte("fecha", desde.isoformat())
-            .order("numero_pedido", desc=True).limit(1000).execute().data)
+    columnas = ("numero_pedido,fecha,cliente,total,concepto,uso_cfdi,email,telefono,email_facturacion,"
+                "telefono_facturacion,notas_facturacion,status,estado_pedido,efectivo,no_factura")
+    def leer(cols):
+        return (sb.table("pedidos").select(cols)
+                .eq("requiere_facturacion", True).gte("fecha", desde.isoformat())
+                .order("numero_pedido", desc=True).limit(1000).execute().data)
+    try:
+        rows = leer(columnas + ",envio")
+    except Exception:          # todavía no existe la columna «envio»
+        rows = leer(columnas)
     return [r for r in rows if r.get("status") != "Cancelado" and r.get("estado_pedido") != "Cancelado"]
 
 

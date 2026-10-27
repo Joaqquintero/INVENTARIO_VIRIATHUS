@@ -659,7 +659,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        datos_guardar = {
 
 
-           "MODELO": modelo, "NOMBRE": nombre, "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
+           "MODELO": modelo, "NOMBRE": " ".join(str(nombre or "").split()), "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
            "OBSERVACIONES": observaciones,
            "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
            "DISPONIBILIDAD": disponibilidad, "DISP": disponibilidad, "UBICACION": ubicacion,
@@ -1048,7 +1048,7 @@ if tab1 is not None:
                               st.caption("Sin imagen asignada")
                       
                           st.markdown(f"### *{mod_p}*")
-                          st.write(f"*{pdata.get('NOMBRE', 'Sin Nombre')}*")
+                          st.caption(str(pdata.get('NOMBRE') or 'Sin Nombre').strip())
                       
                           if is_reservado:
                               st.warning("Estado: RESERVADO (cotización)")

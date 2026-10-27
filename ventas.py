@@ -162,9 +162,11 @@ def anticipo_efectivo(anticipo, pagos, total):
     return round(min(max(anticipo or 0.0, cobrado), total), 2)
 
 
-def calcular(items, descuento_pct, con_iva, anticipo, status=None):
+def calcular(items, descuento_pct, con_iva, anticipo, status=None, envio=0.0):
     """Cada renglón puede traer su propio "descuento_pct"; `descuento_pct` (general) se mantiene
-    solo para pedidos antiguos y se combina con el del renglón."""
+    solo para pedidos antiguos y se combina con el del renglón.
+    `envio` (con IVA incluido, como los precios) se suma al total que paga el cliente, pero el subtotal,
+    el IVA, la utilidad y la comisión salen solo de los productos."""
     fg = 1.0 - (descuento_pct or 0.0) / 100.0
     lineas, bruto = [], 0.0
     for it in items:
@@ -174,16 +176,19 @@ def calcular(items, descuento_pct, con_iva, anticipo, status=None):
         factor = (1.0 - di / 100.0) * fg
         # Con descuento se redondea por renglón (como en el pedido en papel)
         lineas.append(redondear_peso(b * factor) if (di or descuento_pct) else round(b, 2))
-    total = round(sum(lineas), 2)
+    envio = round(max(_num(envio), 0.0), 2)
+    total_prod = round(sum(lineas), 2)
+    total = round(total_prod + envio, 2)
     costo = round(sum(it["costo_unitario"] * it["cantidad"] for it in items), 2)
     util_inv = round(sum(it.get("utilidad_bruta_inv", 0.0) * it["cantidad"] for it in items), 2)
     if con_iva:
-        subtotal = round(total / IVA_FACTOR, 2)
-        iva = round(total - subtotal, 2)
+        subtotal = round(total_prod / IVA_FACTOR, 2)
+        iva = round(total_prod - subtotal, 2)
     else:
-        subtotal, iva = total, 0.0
+        subtotal, iva = total_prod, 0.0
     return {
         "lineas": lineas, "bruto": round(bruto, 2), "total": total, "subtotal": subtotal,
+        "total_productos": total_prod, "envio": envio,
         "iva": iva, "costo": costo, "utilidad": round(subtotal - costo, 2),
         "comision": round(subtotal * 0.02, 2),
         "saldo": 0.0 if status in SALDO_CERO else round(total - (anticipo or 0.0), 2),
@@ -363,7 +368,7 @@ def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=
     return f"Pedido {numero} actualizado.", avisos
 
 
-def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario=""):
+def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario="", envio=None):
     """Reemplaza los renglones de un pedido ya guardado (modelo, descripción, cantidad, precio, costo) y
     recalcula subtotal / IVA / total / costo. Ajusta el inventario: los modelos que salen vuelven a
     disponible y los que entran se marcan vendidos.
@@ -419,14 +424,21 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                       "cantidad": cantidad, "precio_unitario": precio, "costo_unitario": costo,
                       "utilidad_bruta_inv": util_inv, "descuento_pct": desc_pct})
 
+    envio_ant = round(_num(ped.get("envio")), 2)
+    envio = envio_ant if envio is None else round(max(_num(envio), 0.0), 2)
+    if envio and "envio" not in ped:
+        raise ValueError("Falta la columna «envio» en la tabla pedidos de Supabase. Pide que corran el SQL del envío.")
     calc = calcular(items, _num(ped.get("descuento_pct")), bool(ped.get("con_iva")),
-                    _num(ped.get("anticipo")), ped.get("status"))
+                    _num(ped.get("anticipo")), ped.get("status"), envio)
     nota = (f"[{dt.date.today().isoformat()} {usuario}] Productos editados: total "
-            f"${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}.")       # sin costos: la nota la ven los vendedores
+            f"${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}"
+            + (f" (envío ${envio_ant:,.2f} → ${envio:,.2f})" if envio != envio_ant else "") + ".")
     previas = (ped.get("observaciones") or "").strip()
     nuevos_datos = {"subtotal": calc["subtotal"], "iva": calc["iva"], "total": calc["total"],
                     "costo_total": calc["costo"], "observaciones": (previas + "\n" + nota).strip()}
-    anteriores = {k: ped.get(k) for k in ("subtotal", "iva", "total", "costo_total", "observaciones")}
+    if "envio" in ped:
+        nuevos_datos["envio"] = envio
+    anteriores = {k: ped.get(k) for k in nuevos_datos}
 
     sb.table("pedidos").update(nuevos_datos).eq("numero_pedido", numero).execute()
     try:
@@ -853,6 +865,10 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
     con_iva = st.checkbox("Desglosar IVA (el cliente lo pidió)", key=k("iva"),
                           help="Apagado: subtotal = total. Prendido: subtotal = total / 1.16.")
     anticipo = 0.0      # ya no se captura: lo cobrado sale de los pagos de la sección «Pago»
+    envio = st.number_input("ENVÍO ($, IVA incluido)", min_value=0.0, step=100.0, format="%.2f", key=k("envio"),
+                            help="Lo que se le cobra al cliente por el envío. Se suma al total, pero no cuenta para "
+                                 "el subtotal de ventas, la utilidad ni la comisión. En la factura sale como "
+                                 "«Servicio de envío». No lo agregues como producto S/N.")
 
     # Lista de renglones (precio y cantidad editables)
     if items:
@@ -883,7 +899,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             ss["vt_items"] = [i for i in items if i["id"] != quitar]
             st.rerun()
 
-    calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")))
+    calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")), envio)
 
     if items:
         st.caption("Totales por renglón: " + " · ".join(
@@ -935,7 +951,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
     anticipo_ef = anticipo_efectivo(anticipo, pagos, calc["total"])
     if es_pagado(status, estado) and not any(p["monto"] > 0 for p in pagos):
         anticipo_ef = calc["total"]          # pagado y sin montos capturados: se toma como pagado el total
-    calc = calcular(items, descuento, con_iva, anticipo_ef, status)
+    calc = calcular(items, descuento, con_iva, anticipo_ef, status, envio)
     with caja_totales:
         t1, t2, t3, t4 = st.columns(4)
         t1.metric("TOTAL", f"${calc['total']:,.2f}")
@@ -943,6 +959,9 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         t3.metric("SALDO", f"${calc['saldo']:,.2f}")
         if con_iva:
             t4.metric("SUBTOTAL / IVA", f"${calc['subtotal']:,.2f} / ${calc['iva']:,.2f}")
+        if calc["envio"]:
+            st.caption(f"Productos ${calc['total_productos']:,.2f} + envío ${calc['envio']:,.2f} = "
+                       f"total ${calc['total']:,.2f}" + (" (subtotal e IVA son solo de los productos)" if con_iva else ""))
         if ve_costos and items:
             u1, u2, u3 = st.columns(3)
             u1.metric("COSTO", f"${calc['costo']:,.2f}")
@@ -1004,6 +1023,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 "con_iva": bool(con_iva), "descuento_pct": float(descuento),
                 "costo_total": calc["costo"], "subtotal": calc["subtotal"], "iva": calc["iva"],
                 "total": calc["total"], "anticipo": float(anticipo_ef),
+                **({"envio": calc["envio"]} if calc["envio"] else {}),
                 "fecha_pago": min(fechas) if fechas else None,
                 "created_by": responsable, "origen": "app",
             }
@@ -1014,7 +1034,11 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 try:
                     numero = guardar_pedido(sb, datos, items, calc["lineas"], vendedores, pagos_validos)
                 except Exception as ex:
-                    st.error(f"No se pudo guardar el pedido: {ex}")
+                    if "envio" in str(ex):
+                        st.error("No se pudo guardar: falta la columna «envio» en la tabla pedidos de Supabase "
+                                 "(hay que correr el SQL del envío). Mientras, deja el envío en 0.")
+                    else:
+                        st.error(f"No se pudo guardar el pedido: {ex}")
                     return
                 avisos = []
                 apartados = set(dc["apartados"]) if dc else set()
@@ -1156,6 +1180,8 @@ def tab_pedidos(sb, user):
     m1.metric("TOTAL", f"${_num(ped['total']):,.2f}")
     m2.metric("ANTICIPO", f"${_num(ped['anticipo']):,.2f}")
     m3.metric("SALDO", f"${_num(ped['saldo']):,.2f}")
+    if _num(ped.get("envio")):
+        st.caption(f"El total incluye envío de ${_num(ped.get('envio')):,.2f} (no cuenta para utilidad ni comisión).")
     if ve_costos:
         n1, n2, n3 = st.columns(3)
         n1.metric("COSTO", f"${_num(ped['costo_total']):,.2f}")
@@ -1278,6 +1304,9 @@ def tab_pedidos(sb, user):
             tomar_inv = st.checkbox("Si cambio el modelo y no toco el precio/costo, tomarlos del inventario",
                                     value=True, key=f"vp_ei_inv_{sel}")
             acepta_v = st.checkbox("Aceptar modelos que ya figuran como vendidos", value=False, key=f"vp_ei_vend_{sel}")
+            envio_ed = st.number_input("ENVÍO ($, IVA incluido)", min_value=0.0, value=float(_num(ped.get("envio"))),
+                                       step=100.0, format="%.2f", key=f"vp_ei_envio_{sel}",
+                                       help="Se suma al total; no cuenta para utilidad ni comisión.")
             q_v2, q_c2 = codigos.pedir_identidad(sb, f"vp_ei_{sel}")
             if st.button("Guardar productos", type="primary", key=f"vp_ei_guardar_{sel}") \
                     and (quien2 := codigos.confirmar(sb, q_v2, q_c2)):
@@ -1289,7 +1318,7 @@ def tab_pedidos(sb, user):
                     d["orig"] = items[idx_f] if isinstance(idx_f, int) and idx_f < len(items) else None
                     filas.append(d)
                 try:
-                    mensaje, avisos = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2)
+                    mensaje, avisos = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2, envio_ed)
                 except ValueError as ex:
                     st.error(f"{ex}")
                 except Exception as ex:
