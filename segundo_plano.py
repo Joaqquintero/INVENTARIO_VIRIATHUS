@@ -3,9 +3,30 @@ Tareas periódicas que NO hacen esperar a la página: la revisión corre en un h
 siempre el último resultado conocido. El estado vive en el módulo, así que se comparte entre todas las
 sesiones (una sola revisión para todos).
 """
+import ctypes
 import datetime as dt
+import gc
 import threading
 import time
+
+# Memoria: en Linux (Streamlit Cloud) cada hilo nuevo puede reservar su propia «arena» de memoria que luego no se
+# devuelve al servidor, y la app se va inflando con cada revisión en segundo plano. Se limitan las arenas a 2 y,
+# al terminar cada tarea, se devuelve al servidor la memoria libre. En Mac/Windows esto simplemente no hace nada.
+try:
+    _LIBC = ctypes.CDLL("libc.so.6")
+    _LIBC.mallopt(-8, 2)        # M_ARENA_MAX = 2
+except Exception:
+    _LIBC = None
+
+
+def liberar_memoria():
+    """Recolecta basura y devuelve al sistema la memoria libre (malloc_trim)."""
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
 
 
 class TareaPeriodica:
@@ -25,6 +46,7 @@ class TareaPeriodica:
         with self._lock:
             self._resultado = res
             self._corriendo = False
+        liberar_memoria()
 
     def obtener(self, *args):
         """Devuelve el último resultado al instante; si ya toca, lanza una nueva revisión en segundo plano."""

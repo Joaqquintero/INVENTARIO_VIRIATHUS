@@ -12,7 +12,7 @@ _FUNCIONES = []
 
 def guardar_en_memoria(ttl):
     def deco(f):
-        g = st.cache_data(ttl=ttl, show_spinner=False)(f)
+        g = st.cache_data(ttl=ttl, max_entries=30, show_spinner=False)(f)
         _FUNCIONES.append(g)
         return g
     return deco

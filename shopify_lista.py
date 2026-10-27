@@ -45,24 +45,40 @@ def _leer_shopify():
         cursor = d["pageInfo"]["endCursor"]
 
 
+def inventario_resumido(sb, skus):
+    """{modelo: {disp, nombre, precio, cantidad}} de los modelos dados. Lee por tandas de 100 y de cada ficha
+    guarda solo esos 4 datos (no la ficha completa con descripción y cédula), para usar poca memoria."""
+    res = {}
+    skus = list(skus)
+    for i in range(0, len(skus), 100):
+        filas = sb.table("productos").select("MODELO,datos_json").in_("MODELO", skus[i:i + 100]).execute().data or []
+        for f in filas:
+            d = _parse(f.get("datos_json"))
+            res[str(f["MODELO"]).strip()] = {
+                "disp": str(d.get("DISP", d.get("DISPONIBILIDAD", "")) or "").strip().lower(),
+                "nombre": str(d.get("NOMBRE", "") or ""),
+                "precio": _num(d.get("REDONDEO_SHOWROOM")),
+                "cantidad": _num(d.get("CANTIDAD"), 1.0) if str(d.get("CANTIDAD", "") or "").strip() else 1.0,
+            }
+        del filas
+    return res
+
+
 def _calcular_tabla(_sb):
     shopify = _leer_shopify()
     por_sku = {p["sku"]: p for p in shopify}
     skus = list(por_sku)
-    inventario = {}
-    for i in range(0, len(skus), 100):
-        for f in (_sb.table("productos").select("MODELO,datos_json").in_("MODELO", skus[i:i + 100]).execute().data or []):
-            inventario[str(f["MODELO"]).strip()] = _parse(f.get("datos_json"))
+    inventario = inventario_resumido(_sb, skus)
     shop = _secret("SHOPIFY_SHOP").replace(".myshopify.com", "")
     filas = []
     for sku, d in inventario.items():
         p = por_sku[sku]
-        disp = str(d.get("DISP", d.get("DISPONIBILIDAD", "")) or "").strip().lower()
+        disp = d["disp"]
         filas.append({
             "MODELO": sku,
-            "NOMBRE": str(d.get("NOMBRE", "") or p["titulo"]),
+            "NOMBRE": d["nombre"] or p["titulo"],
             "Estado en Shopify": ESTADOS.get(p["estado"], p["estado"]),
-            "Precio inventario": _num(d.get("REDONDEO_SHOWROOM")),
+            "Precio inventario": d["precio"],
             "Precio Shopify": p["precio"],
             "Stock Shopify": p["stock"],
             "Inventario": "Vendido" if disp == "v" else ("Reservado" if disp == "r" else "Disponible"),

@@ -11,9 +11,17 @@ _PESADOS = ("et_pdf", "ct_ultimo", "vt_ultimo")
 
 def liberar_pesados():
     ss = st.session_state
+    borrados = False
     for k in list(ss.keys()):
         if k in _PESADOS or any(str(k).startswith(p) for p in _PESADOS_PREFIJOS):
             ss.pop(k, None)
+            borrados = True
+    if borrados:
+        try:
+            from segundo_plano import liberar_memoria
+            liberar_memoria()
+        except Exception:
+            pass
 
 
 def selector(opciones, key, etiqueta="Sección"):

@@ -194,6 +194,31 @@ def html_partidas(partidas):
     return _CSS + cuerpo + _JS
 
 
+def excel_contpaqi(partidas):
+    """Excel para «Importar/Exportar Excel» de la factura en CONTPAQi (Cantidad, Descripción, Unidad, Precio Unitario).
+    CONTPAQi los importa en orden inverso, así que se escriben al revés para que queden en el orden de la app.
+    El IVA 16% se elige en CONTPAQi en cada renglón después de importar."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Partidas"
+    ws.append(["Cantidad", "Descripción", "Unidad", "Precio Unitario"])
+    for c in ws[1]:
+        c.font = Font(bold=True)
+    for p in reversed(partidas):
+        ws.append([int(p["cantidad"]), p["descripcion"], p["unidad"], float(p["precio_unitario"])])
+    for fila in ws.iter_rows(min_row=2, min_col=4, max_col=4):
+        for c in fila:
+            c.number_format = "0.00####"
+    ws.column_dimensions["B"].width = 50
+    ws.column_dimensions["D"].width = 16
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 def html_datos(pares):
     filas = "".join(f'<tr><th style="width:170px">{html.escape(k)}</th>{_celda(v)}</tr>' for k, v in pares if v)
     if not filas:
@@ -437,6 +462,12 @@ def tab_por_facturar(sb, user):
     st.markdown("**Partidas para CONTPAQi**")
     alto = 90 + 38 * len(partidas) + 16 * sum(len(x["avisos"]) for x in partidas)
     components.html(html_partidas(partidas), height=min(alto, 900), scrolling=alto > 900)
+    nombre_xlsx = "factura_pedido_" + "_".join(str(p["numero_pedido"]) for p in elegidos)[:60] + ".xlsx"
+    st.download_button("📥 Descargar Excel para CONTPAQi", excel_contpaqi(partidas), file_name=nombre_xlsx,
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       type="primary", key=f"pf_xlsx_{nombre_xlsx}")
+    st.caption("En CONTPAQi: elige el cliente → «Importar/Exportar Excel» → este archivo. "
+               "Después elige **IVA 16%** en «Tipo Impuesto» de cada renglón y revisa que el total coincida.")
 
     total_ped = sum((_r2(_d(p["total"])) for p in elegidos), Decimal("0"))
     total_fac = sum((x["total"] for x in partidas), Decimal("0"))

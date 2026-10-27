@@ -5,8 +5,8 @@
 ;  Cómo se usa:
 ;   1. En la app, pestaña Ventas › Por facturar, elige el/los pedido(s)
 ;      y toca «Copiar tabla completa».
-;   2. En CONTPAQi abre la factura y deja el cursor en la PRIMERA celda
-;      del primer renglón vacío de las partidas.
+;   2. En CONTPAQi abre la factura y haz clic en la celda «Cantidad»
+;      del primer renglón vacío (pestaña «Detalle»).
 ;   3. Presiona  Ctrl + Alt + P.  Revisa el resumen y confirma.
 ;
 ;  MODO PRÁCTICA: abre el Bloc de notas y haz lo mismo (Ctrl + Alt + P).
@@ -23,9 +23,13 @@
 ;   TAB, ENTER, F2, ABAJO, DERECHA, IZQUIERDA, INICIO        → oprime esa tecla
 ;   ESPERA                                                   → pausa extra
 ;   BORRAR                                                   → selecciona todo el campo y lo borra
-; Ejemplo típico (código → nombre → cantidad → precio → siguiente renglón):
-ORDEN := "codigo,TAB,ESPERA,BORRAR,descripcion,TAB,cantidad,TAB,TAB,precio,TAB,ENTER"
+; En tu pantalla de CONTPAQi (pestaña Detalle) el renglón es:
+;   Cant. Presente | Cantidad | Descripción | Unidad | Precio Unitario | Total (se calcula) | ...
+; Se empieza con el cursor en «Cantidad». Al terminar, ENTER pasa al siguiente renglón
+; (si en tu CONTPAQi no pasa, cambia el final por:  ABAJO,INICIO,DERECHA ).
+ORDEN := "cantidad,TAB,descripcion,TAB,unidad,TAB,precio,ENTER,ESPERA"
 
+; (No se usa con tu pantalla: no tiene columna de código. Se deja por si algún día cambia.)
 ; Código del producto de CONTPAQi según la descripción de la partida.
 ; Las partidas agrupadas salen con el nombre del concepto en mayúsculas.
 CODIGOS := Map(

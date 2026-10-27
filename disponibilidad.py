@@ -18,7 +18,7 @@ import codigos
 from segundo_plano import TareaPeriodica
 from sync_shopify import _num, _parse
 
-INTERVALO_SEG = 600
+INTERVALO_SEG = 1800      # cada 30 min (y el botón «Revisar ahora»)
 MAX_FILAS = 60
 
 
@@ -28,29 +28,25 @@ def _estado_inv(d):
 
 
 def calcular_diferencias(sb):
-    from shopify_lista import _leer_shopify
+    from shopify_lista import _leer_shopify, inventario_resumido
     shop = [p for p in _leer_shopify() if p.get("estado") != "ARCHIVED"]
     por_sku = {p["sku"]: p for p in shop}
-    skus = list(por_sku)
-    inventario = {}
-    for i in range(0, len(skus), 100):
-        for f in (sb.table("productos").select("MODELO,datos_json").in_("MODELO", skus[i:i + 100]).execute().data or []):
-            inventario[str(f["MODELO"]).strip()] = _parse(f.get("datos_json"))
+    inventario = inventario_resumido(sb, list(por_sku))      # solo 4 datos por ficha: poca memoria
 
     difs = []
     for sku, d in inventario.items():
         p = por_sku[sku]
         stock = p.get("stock")
-        if stock is None or _num(d.get("CANTIDAD"), 1.0) > 1:
+        if stock is None or d["cantidad"] > 1:
             continue
-        est = _estado_inv(d)
+        est = d["disp"] if d["disp"] in ("v", "r") else ""
         if est == "" and stock <= 0:
             tipo = "shopify_agotado"
         elif est in ("v", "r") and stock >= 1:
             tipo = "shopify_a_la_venta"
         else:
             continue
-        difs.append({"sku": sku, "nombre": str(d.get("NOMBRE", "") or p.get("titulo") or ""), "tipo": tipo,
+        difs.append({"sku": sku, "nombre": d["nombre"] or str(p.get("titulo") or ""), "tipo": tipo,
                      "inv": est, "stock": stock, "estado_shop": p.get("estado"), "id": p.get("id"), "venta": ""})
 
     # ¿Hubo una venta en Shopify de esa pieza? (ayuda a decidir quién tiene razón)
