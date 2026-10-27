@@ -243,6 +243,33 @@ def ejecutar_script_python(nombre_script):
 # --- FORMULARIO PRINCIPAL ESTRUCTURADO ---
 
 
+def _memoria_app_mb():
+   """Memoria que usa ahora la app (MB). En Linux/Streamlit Cloud es la actual; en Mac, el pico."""
+   try:
+       with open("/proc/self/status") as f:
+           for linea in f:
+               if linea.startswith("VmRSS:"):
+                   return int(linea.split()[1]) / 1024, "actual"
+   except Exception:
+       pass
+   try:
+       import resource
+       import sys
+       r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+       return (r / 1048576 if sys.platform == "darwin" else r / 1024), "pico"
+   except Exception:
+       return None, ""
+
+
+def _sesiones_abiertas():
+   """Cuántas pestañas/computadoras tienen la app abierta ahora (si Streamlit lo permite saber)."""
+   try:
+       from streamlit.runtime import get_instance
+       return len(get_instance()._session_mgr.list_active_sessions())
+   except Exception:
+       return None
+
+
 def comprimir_foto(datos, lado_max=1600, calidad=85):
    """Deja la foto liviana antes de subirla: gira según la orientación del celular, la reduce a máximo
    `lado_max` px por lado y la guarda como JPEG de buena calidad (convierte PNG/WEBP de verdad a JPG).
@@ -745,6 +772,15 @@ with st.sidebar:
    if st.button("Cerrar Sesión", use_container_width=True, key="btn_logout"):
        st.session_state["logged_in"] = False
        st.rerun()
+   if user["role"] == "Dios":
+       _mem, _tipo = _memoria_app_mb()
+       if _mem is not None:
+           _sem = "🟢" if _mem < 450 else ("🟡" if _mem < 650 else "🔴")
+           _ses = _sesiones_abiertas()
+           st.caption(f"{_sem} Memoria de la app: **{_mem:,.0f} MB**" + (" (pico)" if _tipo == "pico" else "")
+                      + (f" · {_ses} sesión(es) abierta(s)" if _ses is not None else ""),
+                      help="Streamlit Cloud garantiza ~690 MB (a veces da más). Verde < 450 MB, amarillo < 650 MB, "
+                           "rojo: cerca del límite. Si se queda en rojo, avisa qué se estaba haciendo.")
    st.divider()
    # Ventas de Shopify -> inventario (revisa Shopify como máximo cada 2 minutos)
    _sync = sincronizar_en_segundo_plano(supabase)
