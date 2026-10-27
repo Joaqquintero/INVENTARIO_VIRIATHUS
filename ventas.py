@@ -430,12 +430,11 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
         raise ValueError("Falta la columna «envio» en la tabla pedidos de Supabase. Pide que corran el SQL del envío.")
     calc = calcular(items, _num(ped.get("descuento_pct")), bool(ped.get("con_iva")),
                     _num(ped.get("anticipo")), ped.get("status"), envio)
-    nota = (f"[{dt.date.today().isoformat()} {usuario}] Productos editados: total "
-            f"${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}"
+    nota = (f"Total ${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}"
             + (f" (envío ${envio_ant:,.2f} → ${envio:,.2f})" if envio != envio_ant else "") + ".")
-    previas = (ped.get("observaciones") or "").strip()
+    # El cambio queda en el registro de cambios; las observaciones son solo las notas del vendedor
     nuevos_datos = {"subtotal": calc["subtotal"], "iva": calc["iva"], "total": calc["total"],
-                    "costo_total": calc["costo"], "observaciones": (previas + "\n" + nota).strip()}
+                    "costo_total": calc["costo"]}
     if "envio" in ped:
         nuevos_datos["envio"] = envio
     anteriores = {k: ped.get(k) for k in nuevos_datos}
@@ -473,7 +472,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                       f"(${_num(ped.get('anticipo')):,.2f}): hay un saldo a favor del cliente. Revisa los pagos.")
     if ped.get("status") in SALDO_CERO and ped.get("status") != "Cancelado" and abs(calc["total"] - _num(ped.get("total"))) > 0.005:
         avisos.append("El pedido figura como pagado y su total cambió: revisa que los pagos registrados cuadren con el nuevo total.")
-    return f"Pedido {numero}: productos actualizados. Nuevo total ${calc['total']:,.2f}.", avisos
+    return f"Pedido {numero}: productos actualizados. {nota}", avisos
 
 
 def actualizar_facturacion(sb, numero, efectivo, con_iva, sin_iva, no_factura, calcular_sin_iva=True):
@@ -865,10 +864,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
     con_iva = st.checkbox("Desglosar IVA (el cliente lo pidió)", key=k("iva"),
                           help="Apagado: subtotal = total. Prendido: subtotal = total / 1.16.")
     anticipo = 0.0      # ya no se captura: lo cobrado sale de los pagos de la sección «Pago»
-    envio = st.number_input("ENVÍO ($, IVA incluido)", min_value=0.0, step=100.0, format="%.2f", key=k("envio"),
-                            help="Lo que se le cobra al cliente por el envío. Se suma al total, pero no cuenta para "
-                                 "el subtotal de ventas, la utilidad ni la comisión. En la factura sale como "
-                                 "«Servicio de envío». No lo agregues como producto S/N.")
+    envio = float(ss.get(k("envio")) or 0.0)
 
     # Lista de renglones (precio y cantidad editables)
     if items:
@@ -895,6 +891,15 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             c4.markdown(f"**${calcular([it], 0.0, False, 0.0)['total']:,.2f}**")
             if c5.button("Quitar", key=k(f"del_{it['id']}")):
                 quitar = it["id"]
+        # Envío: un renglón más, abajo de los modelos
+        e1, e2, e3, e6, e4, e5 = st.columns([4, 1, 2, 1, 2, 1])
+        e1.markdown("**ENVÍO** — Servicio de envío (IVA incluido; déjalo en 0 si no lleva)")
+        e2.markdown("1")
+        envio = e3.number_input("envío", min_value=0.0, step=100.0, format="%.2f", key=k("envio"),
+                                label_visibility="collapsed",
+                                help="Se suma al total, pero no cuenta para la utilidad ni la comisión. "
+                                     "No lo agregues como producto S/N.")
+        e4.markdown(f"**${envio:,.2f}**")
         if quitar:
             ss["vt_items"] = [i for i in items if i["id"] != quitar]
             st.rerun()
@@ -1027,9 +1032,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 "fecha_pago": min(fechas) if fechas else None,
                 "created_by": responsable, "origen": "app",
             }
-            if dc:
-                nota_cot = f"Viene de la cotización {dc['codigo']}."
-                datos["observaciones"] = (nota_cot + " " + (datos["observaciones"] or "")).strip()
             with st.spinner("Guardando pedido..."):
                 try:
                     numero = guardar_pedido(sb, datos, items, calc["lineas"], vendedores, pagos_validos)
@@ -1281,18 +1283,24 @@ def tab_pedidos(sb, user):
 
     if puede_cancelar and items and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         with st.expander("Editar productos del pedido" + (" (modelo, precio, costo)" if ve_costos else " (modelo, precio, descuento)")):
-            st.caption("Cambia modelos, descripciones, cantidades, precios o costos de este pedido. Puedes agregar o quitar "
-                       "renglones. Deja el modelo vacío para un renglón S/N. Se recalculan subtotal, IVA, total, costo, "
-                       "utilidad y comisión; los modelos que salen vuelven a disponible y los que entran quedan vendidos. "
-                       "Los pagos registrados no cambian.")
+            st.markdown("- **Quitar un producto:** marca su casilla **QUITAR** (última columna).\n"
+                        "- **Agregar uno:** escríbelo en un renglón vacío de abajo (modelo vacío = S/N).\n"
+                        "- **Envío:** ponlo en el campo **ENVÍO**, no como producto S/N.\n"
+                        "- Luego tu código y **Guardar productos**. Nada se guarda hasta ese botón.")
+            st.caption("Se recalculan subtotal, IVA, total, costo, utilidad y comisión; los modelos que salen vuelven a "
+                       "disponible y los que entran quedan vendidos. Los pagos registrados no cambian.")
+            vers = st.session_state.get(f"vp_ei_v_{sel}", 0)
+            vacio = {"modelo": "", "descripcion": "", "cantidad": 1, "precio_unitario": 0.0, "descuento_pct": 0.0,
+                     **({"costo_unitario": 0.0} if ve_costos else {}), "quitar": False}
             base = pd.DataFrame([{"modelo": i.get("modelo") or "", "descripcion": i.get("descripcion") or "",
                                   "cantidad": int(_num(i.get("cantidad"), 1)),
                                   "precio_unitario": _num(i.get("precio_unitario")),
                                   "descuento_pct": _num(i.get("descuento_pct")),
-                                  **({"costo_unitario": _num(i.get("costo_unitario"))} if ve_costos else {})}
-                                 for i in items])
+                                  **({"costo_unitario": _num(i.get("costo_unitario"))} if ve_costos else {}),
+                                  "quitar": False}
+                                 for i in items] + [dict(vacio), dict(vacio)])
             editado = st.data_editor(
-                base, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"vp_ei_{sel}",
+                base, num_rows="fixed", use_container_width=True, hide_index=True, key=f"vp_ei_{sel}_{vers}",
                 column_config={
                     "modelo": st.column_config.TextColumn("MODELO (vacío = S/N)"),
                     "descripcion": st.column_config.TextColumn("DESCRIPCIÓN"),
@@ -1300,7 +1308,14 @@ def tab_pedidos(sb, user):
                     "precio_unitario": st.column_config.NumberColumn("PRECIO UNIT.", min_value=0.0, format="$%.2f", default=0.0),
                     "descuento_pct": st.column_config.NumberColumn("DESC. %", min_value=0.0, max_value=100.0, format="%.1f", default=0.0),
                     **({"costo_unitario": st.column_config.NumberColumn("COSTO UNIT.", min_value=0.0, format="$%.2f", default=0.0)}
-                       if ve_costos else {})})
+                       if ve_costos else {}),
+                    "quitar": st.column_config.CheckboxColumn("🗑 QUITAR", default=False,
+                                                              help="Marca para quitar este renglón del pedido.")})
+            envio_sn = [i for i in items if not i.get("modelo") and "envi" in
+                        str(i.get("descripcion") or "").lower().replace("í", "i")]
+            if envio_sn and not _num(ped.get("envio")):
+                st.info("Este pedido tiene el envío como producto S/N. Para separarlo: marca **QUITAR** en ese "
+                        "renglón y pon el monto en **ENVÍO** (abajo).")
             tomar_inv = st.checkbox("Si cambio el modelo y no toco el precio/costo, tomarlos del inventario",
                                     value=True, key=f"vp_ei_inv_{sel}")
             acepta_v = st.checkbox("Aceptar modelos que ya figuran como vendidos", value=False, key=f"vp_ei_vend_{sel}")
@@ -1313,6 +1328,8 @@ def tab_pedidos(sb, user):
                 filas = []
                 for idx_f, fila in editado.iterrows():
                     d = {k: (None if pd.isna(v) else v) for k, v in fila.to_dict().items()}
+                    if d.pop("quitar", False):
+                        continue            # marcado para quitar
                     if not d.get("modelo") and not d.get("descripcion") and not _num(d.get("precio_unitario")):
                         continue            # renglón en blanco
                     d["orig"] = items[idx_f] if isinstance(idx_f, int) and idx_f < len(items) else None
@@ -1325,6 +1342,7 @@ def tab_pedidos(sb, user):
                     st.error(f"No se pudo guardar: {ex}")
                 else:
                     codigos.registrar(sb, quien2, "Editó productos", "pedido", sel, mensaje)
+                    st.session_state[f"vp_ei_v_{sel}"] = vers + 1      # el editor vuelve a leer el pedido guardado
                     st.session_state["vp_msg"] = mensaje
                     st.session_state["vp_avisos"] = avisos
                     st.rerun()

@@ -390,11 +390,18 @@ def _story_pedido(pedido, items, vendedores):
               _p("Cantidad", ST_TH), _p("Total", ST_TH)],
              [_p("Lote OBJETOS", ST_BAND), "", "", "", ""]]
     bruto, piezas = 0.0, 0
+    envio = round(_num(pedido.get("envio")), 2)
+    if envio > 0:      # el envío va como un renglón más, abajo de los modelos (no cuenta como objeto)
+        items = list(items) + [{"es_sn": True, "descripcion": "Servicio de envío", "cantidad": 1,
+                                "precio_unitario": envio, "total_linea": envio, "_envio": True}]
     for it in items:
         cant = int(_num(it.get("cantidad"), 1))
-        piezas += cant
+        if not it.get("_envio"):
+            piezas += cant
         modelo = "S/N" if (it.get("es_sn") or not it.get("modelo")) else str(it.get("modelo"))
-        if sin_precios:
+        if it.get("_envio"):
+            modelo = "ENVÍO"
+        if sin_precios and not it.get("_envio"):
             filas.append([_p(modelo, ST_CELL_C), _p(it.get("descripcion") or "", ST_CELL),
                           "", _p(cant, ST_CELL_C), ""])
             continue
@@ -410,7 +417,7 @@ def _story_pedido(pedido, items, vendedores):
         filas.append([_p(modelo, ST_CELL_C), Paragraph(desc_txt, ST_CELL),
                       _p(_dinero(precio), ST_CELL_R), _p(cant, ST_CELL_C), _p(_dinero(linea), ST_CELL_R)])
     if sin_precios:
-        bruto = _num(pedido.get("total")) - _num(pedido.get("envio"))   # sin precios por pieza: el lote vale lo que el pedido
+        bruto = _num(pedido.get("total"))          # sin precios por pieza: el lote vale lo que el pedido
     # Filas en blanco: menos cuando entran las secciones de entrega / facturación, para que todo quepa en una hoja
     n_sec = (1 if _mostrar_seccion(pedido, "requiere_entrega", ENTREGA_CAMPOS) else 0) + \
             (1 if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS) else 0)
@@ -433,11 +440,13 @@ def _story_pedido(pedido, items, vendedores):
 
     # ---- Totales ----
     total = _num(pedido.get("total"))
-    envio = _num(pedido.get("envio"))
     desc_pct = _num(pedido.get("descuento_pct"))
     con_iva = bool(pedido.get("con_iva"))
     anticipo = _num(pedido.get("anticipo"))
-    descuento_monto = round(bruto - (total - envio), 2) if desc_pct > 0 else 0.0
+    descuento_monto = round(bruto - total, 2) if desc_pct > 0 else 0.0
+    # Con envío, el subtotal y el IVA del PDF son de todo el pedido (productos + envío), para que cuadre con el total
+    subtotal = round(total / 1.16, 2) if envio > 0 else _num(pedido.get("subtotal"))
+    iva = round(total - subtotal, 2) if envio > 0 else _num(pedido.get("iva"))
 
     w3 = [COL_W[2], COL_W[3], COL_W[4]]
     sup = Table([[_p("Total Lote OBJETOS", ST_TOT_LB), "", _p(_dinero(bruto), ST_TOT_RB)],
@@ -453,17 +462,13 @@ def _story_pedido(pedido, items, vendedores):
     if desc_pct > 0:
         inf.append(("IMPORTE" if con_iva else "SUBTOTAL", _dinero(bruto), False))
     elif con_iva:
-        inf.append(("SUBTOTAL", _dinero(_num(pedido.get("subtotal"))), False))
+        inf.append(("SUBTOTAL", _dinero(subtotal), False))
     if desc_pct > 0:
         inf.append((f"Descuento -{desc_pct:g}%", "-" + _dinero(descuento_monto), False))
     if con_iva:
         if desc_pct > 0:
-            inf.append(("SUBTOTAL", _dinero(_num(pedido.get("subtotal"))), False))
-        inf.append(("IVA 16%", _dinero(_num(pedido.get("iva"))), False))
-    if envio > 0:
-        if not inf:
-            inf.append(("PRODUCTOS", _dinero(total - envio), False))
-        inf.append(("ENVÍO", _dinero(envio), False))
+            inf.append(("SUBTOTAL", _dinero(subtotal), False))
+        inf.append(("IVA 16%", _dinero(iva), False))
     inf.append(("TOTAL", _dinero(total), True))
     if anticipo > 0:
         inf.append(("ANTICIPO", _dinero(anticipo), False))
