@@ -64,8 +64,8 @@ def anotar(actividad, antes, despues):
 class medir:
     """with medir("Ventas › Pedidos"): ...  → anota cuánto cambió la memoria en ese bloque.
     Si `contenedor` se da, también entra/sale de él (para usarlo en lugar de un st.container)."""
-    def __init__(self, actividad, contenedor=None):
-        self.actividad, self.contenedor = actividad, contenedor
+    def __init__(self, actividad, contenedor=None, al_salir=None):
+        self.actividad, self.contenedor, self.al_salir = actividad, contenedor, al_salir
 
     def __enter__(self):
         self.antes = rss_mb()
@@ -74,7 +74,13 @@ class medir:
     def __exit__(self, *exc):
         res = self.contenedor.__exit__(*exc) if self.contenedor is not None else False
         actividad = self.actividad() if callable(self.actividad) else self.actividad
-        anotar(actividad, self.antes, rss_mb())
+        despues = rss_mb()
+        anotar(actividad, self.antes, despues)
+        if self.al_salir is not None:
+            try:
+                self.al_salir(despues)
+            except Exception:
+                pass
         return res
 
 

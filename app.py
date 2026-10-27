@@ -1,4 +1,11 @@
 import streamlit as st
+# --- Bitácora de memoria: lo que pasa ENTRE clics (Streamlit, fuera de este código) y en cada parte de la página ---
+import bitacora as _bita
+_bita_ini = _bita.rss_mb()
+_bita_prev = st.session_state.get("_bita_fin_run")
+st.session_state["_bita_fin_run"] = None
+if _bita_prev is not None and _bita_ini is not None:
+    _bita.anotar("Entre clics (Streamlit, fuera del código)", _bita_prev, _bita_ini)
 from supabase import create_client
 import json
 import subprocess
@@ -27,7 +34,8 @@ from postgrest.exceptions import APIError
 _DIR_ASSETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets_app")
 try:
    from PIL import Image as _PILImage
-   _icono = _PILImage.open(os.path.join(_DIR_ASSETS, "favicon.png"))
+   # Ícono chico (128 px): el original de 2200×1700 ocupaba 14 MB en memoria EN CADA CLIC
+   _icono = _PILImage.open(os.path.join(_DIR_ASSETS, "favicon_128.png"))
 except Exception:
    _icono = None
 st.set_page_config(
@@ -822,6 +830,7 @@ if puede(user, "shopify_botones"):
    if _difs_disp:
        st.warning(f"{len(_difs_disp)} pieza(s) con disponibilidad distinta entre el inventario y Shopify. "
                   "Ve a la pestaña «Shopify» para revisarlas.")
+_bita.anotar("Encabezado y barra lateral (en cada clic)", _bita_ini, _bita.rss_mb())
 # Las pestañas que el rol no puede usar ni se muestran (ver permisos.py)
 _nombres_tabs = ["Consultar / Buscar"]
 if puede(user, "alta_manual"):
@@ -851,7 +860,8 @@ def _seccion_si(nombre):
         return None
     try:
         from bitacora import medir
-        return medir(_nombre_actividad(nombre), st.container())
+        return medir(_nombre_actividad(nombre), st.container(),
+                     al_salir=lambda mb: st.session_state.__setitem__("_bita_fin_run", mb))
     except Exception:
         return st.container()
 tab1 = _seccion_si("Consultar / Buscar")
