@@ -243,24 +243,6 @@ def ejecutar_script_python(nombre_script):
 # --- FORMULARIO PRINCIPAL ESTRUCTURADO ---
 
 
-def _memoria_app_mb():
-   """Memoria que usa ahora la app (MB). En Linux/Streamlit Cloud es la actual; en Mac, el pico."""
-   try:
-       with open("/proc/self/status") as f:
-           for linea in f:
-               if linea.startswith("VmRSS:"):
-                   return int(linea.split()[1]) / 1024, "actual"
-   except Exception:
-       pass
-   try:
-       import resource
-       import sys
-       r = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-       return (r / 1048576 if sys.platform == "darwin" else r / 1024), "pico"
-   except Exception:
-       return None, ""
-
-
 def _sesiones_abiertas():
    """Cuántas pestañas/computadoras tienen la app abierta ahora (si Streamlit lo permite saber)."""
    try:
@@ -773,7 +755,8 @@ with st.sidebar:
        st.session_state["logged_in"] = False
        st.rerun()
    if user["role"] == "Dios":
-       _mem, _tipo = _memoria_app_mb()
+       import bitacora as _bit
+       _mem, _tipo = _bit.rss_mb(), ("actual" if os.path.exists("/proc/self/status") else "pico")
        if _mem is not None:
            _sem = "🟢" if _mem < 450 else ("🟡" if _mem < 650 else "🔴")
            _ses = _sesiones_abiertas()
@@ -782,10 +765,10 @@ with st.sidebar:
                       help="Streamlit Cloud garantiza ~690 MB (a veces da más). Verde < 450 MB, amarillo < 650 MB, "
                            "rojo: cerca del límite. Si se queda en rojo, avisa qué se estaba haciendo.")
        try:
-           import diagnostico
-           diagnostico.render()
-       except Exception as _ex_diag:
-           st.caption(f"Diagnóstico no disponible: {_ex_diag}")
+           import bitacora
+           bitacora.render()
+       except Exception as _ex_bit:
+           st.caption(f"Bitácora no disponible: {_ex_bit}")
    st.divider()
    # Ventas de Shopify -> inventario (revisa Shopify como máximo cada 2 minutos)
    _sync = sincronizar_en_segundo_plano(supabase)
@@ -852,8 +835,25 @@ if MOSTRAR_VENTAS:
 # Solo se carga la sección elegida (con st.tabs se cargaban todas en cada clic)
 from navegacion import selector as _selector
 _seccion = _selector(_nombres_tabs, "nav_principal")
+def _nombre_actividad(nombre):
+    """«Ventas › Pedidos», «Ventas › Cotizaciones › Guardadas», «Consultar / Buscar»…"""
+    def f():
+        ss = st.session_state
+        partes = [nombre]
+        if nombre == "Ventas" and ss.get("nav_ventas__ultimo"):
+            partes.append(ss["nav_ventas__ultimo"])
+            if ss["nav_ventas__ultimo"] == "Cotizaciones" and ss.get("nav_cot__ultimo"):
+                partes.append(ss["nav_cot__ultimo"])
+        return "Página: " + " › ".join(partes)
+    return f
 def _seccion_si(nombre):
-    return st.container() if _seccion == nombre else None
+    if _seccion != nombre:
+        return None
+    try:
+        from bitacora import medir
+        return medir(_nombre_actividad(nombre), st.container())
+    except Exception:
+        return st.container()
 tab1 = _seccion_si("Consultar / Buscar")
 tab2 = _seccion_si("Alta Manual")
 tab3 = _seccion_si("Herramientas & Scripts")

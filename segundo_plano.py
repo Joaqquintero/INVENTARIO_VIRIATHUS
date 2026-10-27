@@ -51,12 +51,20 @@ class TareaPeriodica:
 
     def _ejecutar(self, args):
         try:
+            import bitacora
+            nombre = bitacora.TAREAS.get(getattr(self.funcion, "__module__", ""), getattr(self.funcion, "__name__", "tarea"))
+            antes = bitacora.rss_mb()
+        except Exception:
+            bitacora = None
+        try:
             res = self.funcion(*args)
         except Exception as ex:
             res = {"ok": False, "error": str(ex), "hora": dt.datetime.now().strftime("%H:%M")}
         with self._lock:
             self._resultado = res
             self._corriendo = False
+        if bitacora is not None:
+            bitacora.anotar(nombre, antes, bitacora.rss_mb())
         liberar_memoria()
 
     def obtener(self, *args):
