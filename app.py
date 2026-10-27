@@ -781,6 +781,11 @@ with st.sidebar:
                       + (f" · {_ses} sesión(es) abierta(s)" if _ses is not None else ""),
                       help="Streamlit Cloud garantiza ~690 MB (a veces da más). Verde < 450 MB, amarillo < 650 MB, "
                            "rojo: cerca del límite. Si se queda en rojo, avisa qué se estaba haciendo.")
+       try:
+           import diagnostico
+           diagnostico.render()
+       except Exception as _ex_diag:
+           st.caption(f"Diagnóstico no disponible: {_ex_diag}")
    st.divider()
    # Ventas de Shopify -> inventario (revisa Shopify como máximo cada 2 minutos)
    _sync = sincronizar_en_segundo_plano(supabase)
