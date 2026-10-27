@@ -135,6 +135,7 @@ def render():
         c1, c2 = st.columns(2)
         if c1.button("Liberar memoria", key="diag_liberar", help="Borra la memoria de corto plazo y devuelve al "
                      "servidor la memoria libre. No borra datos ni cierra sesiones."):
+            antes, _ = memoria_malloc()
             st.cache_data.clear()
             try:
                 from segundo_plano import liberar_memoria

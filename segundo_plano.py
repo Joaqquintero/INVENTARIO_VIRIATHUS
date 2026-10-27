@@ -19,6 +19,17 @@ except Exception:
     _LIBC = None
 
 
+_ULTIMA_LIBERACION = [0.0]
+
+
+def liberar_memoria_cada(segundos=60):
+    """Llamada en cada recarga de página: como máximo una vez por minuto devuelve al servidor la memoria libre."""
+    ahora = time.time()
+    if ahora - _ULTIMA_LIBERACION[0] >= segundos:
+        _ULTIMA_LIBERACION[0] = ahora
+        liberar_memoria()
+
+
 def liberar_memoria():
     """Recolecta basura y devuelve al sistema la memoria libre (malloc_trim)."""
     gc.collect()

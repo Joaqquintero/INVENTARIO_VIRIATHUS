@@ -813,6 +813,11 @@ with st.sidebar:
 
 
 st.title("Buscador e Inventario de Productos")
+try:
+   from segundo_plano import liberar_memoria_cada
+   liberar_memoria_cada(60)          # devuelve al servidor la memoria libre (máx. una vez por minuto)
+except Exception:
+   pass
 if st.session_state.get("aviso_foto"):
    st.success(st.session_state.pop("aviso_foto"))
 if puede(user, "herramientas"):
