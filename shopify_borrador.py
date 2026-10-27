@@ -9,8 +9,24 @@ import html
 import re
 import uuid
 
+import threading
+
 import requests
 import streamlit as st
+
+# UNA sola conexión reutilizable para todas las llamadas HTTP (Shopify, fotos de Supabase).
+# Con requests.post(...) «suelto» cada llamada abría una conexión segura nueva y volvía a cargar los
+# certificados, gastando memoria de bajo nivel que el servidor no recupera. El candado evita que dos hilos
+# la usen exactamente al mismo tiempo.
+_SESION = requests.Session()
+_SESION.mount("https://", requests.adapters.HTTPAdapter(pool_connections=4, pool_maxsize=4))
+_CANDADO_HTTP = threading.Lock()
+
+
+def http(metodo, url, **kw):
+    """requests con la conexión compartida: http("post", url, json=..., timeout=...)."""
+    with _CANDADO_HTTP:
+        return _SESION.request(metodo.upper(), url, **kw)
 
 # ----------------------------------------------------------------------
 # Ajustes
@@ -77,8 +93,8 @@ def _secret(nombre):
 def _token_shopify():
     """Pide un token con Client ID + Client Secret. Se guarda ~50 min y se renueva solo."""
     shop = _secret("SHOPIFY_SHOP")
-    r = requests.post(
-        f"https://{shop}/admin/oauth/access_token",
+    r = http(
+        "post", f"https://{shop}/admin/oauth/access_token",
         data={
             "grant_type": "client_credentials",
             "client_id": _secret("SHOPIFY_CLIENT_ID"),
@@ -98,8 +114,8 @@ def _gql(query, variables=None):
     shop = _secret("SHOPIFY_SHOP")
     url = f"https://{shop}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
     for intento in range(2):
-        r = requests.post(
-            url,
+        r = http(
+            "post", url,
             json={"query": query, "variables": variables or {}},
             headers={"X-Shopify-Access-Token": _token_shopify(), "Content-Type": "application/json"},
             timeout=30,
@@ -184,7 +200,7 @@ def _foto_publica(modelo):
         return None
     url = f"{base}/storage/v1/object/public/imagenes/{modelo}.jpg"
     try:
-        if requests.head(url, timeout=10, allow_redirects=True).status_code == 200:
+        if http("head", url, timeout=10, allow_redirects=True).status_code == 200:
             return url
     except requests.RequestException:
         pass

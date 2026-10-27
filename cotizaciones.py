@@ -100,8 +100,8 @@ def _url_foto_inventario(sb, modelo):
 @st.cache_data(ttl=600, show_spinner=False)
 def _foto_existe(url):
     try:
-        import requests
-        r = requests.head(url, timeout=5, allow_redirects=True)
+        from shopify_borrador import http
+        r = http("head", url, timeout=5, allow_redirects=True)
         return r.status_code == 200
     except Exception:
         return False

@@ -91,8 +91,8 @@ def _cargar_foto(it):
             if not url:
                 return None
             if str(url).startswith("http"):
-                import requests
-                r = requests.get(url, timeout=8)
+                from shopify_borrador import http
+                r = http("get", url, timeout=8)
                 if r.status_code != 200 or not r.content:
                     return None
                 crudo = r.content
