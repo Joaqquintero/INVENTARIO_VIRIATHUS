@@ -6,7 +6,7 @@ import streamlit as st
 # PDFs y archivos pesados que se guardan en la sesión: al cambiar de sección se borran (se pueden volver a generar).
 # Así la memoria de la app no crece con cada computadora que la tiene abierta todo el día.
 _PESADOS_PREFIJOS = ("ctg_pdf_",)
-_PESADOS = ("et_pdf", "ct_ultimo", "vt_ultimo")
+_PESADOS = ("et_pdf", "ct_ultimo", "vt_ultimo", "vp_pdf")
 
 
 def liberar_pesados():

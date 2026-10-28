@@ -730,6 +730,100 @@ def cancelar_conversion():
     _reset_formulario()
 
 
+CAMPOS_ENTREGA = ("requiere_entrega", "domicilio", "atencion", "fecha_entrega", "horario_entrega",
+                  "telefono_entrega", "email_entrega", "notas_entrega")
+CAMPOS_FACTURA = ("requiere_facturacion", "uso_cfdi", "concepto", "telefono_facturacion", "email_facturacion",
+                  "notas_facturacion")
+
+
+def _editar_entrega_facturacion(sb, ped, sel):
+    """Expander del detalle: agregar, quitar o corregir los datos de entrega y de facturación de un pedido guardado."""
+    def v(c):
+        return ped.get(c) or ""
+
+    def fecha(c):
+        try:
+            return dt.date.fromisoformat(str(ped.get(c))[:10]) if ped.get(c) else None
+        except ValueError:
+            return None
+
+    k = lambda n: f"vp_ef_{n}_{sel}"
+    with st.expander("Datos de entrega y facturación"):
+        st.caption("Agrega, corrige o quita los datos de entrega y de facturación. Al marcar facturación, el pedido "
+                   "aparece en «Por facturar».")
+        req_ent = st.checkbox("Este pedido lleva DATOS DE ENTREGA", value=bool(ped.get("requiere_entrega")),
+                              key=k("req_ent"))
+        nuevos = {"requiere_entrega": bool(req_ent)}
+        if req_ent:
+            with st.container(border=True):
+                e1, e2 = st.columns(2)
+                nuevos["domicilio"] = e1.text_area("DOMICILIO", value=v("domicilio"), key=k("dom"), height=90)
+                nuevos["atencion"] = e2.text_input("ATENCIÓN", value=v("atencion"), key=k("aten"))
+                e3, e4 = st.columns(2)
+                nuevos["fecha_entrega"] = _fecha_iso(e3.date_input("FECHA DE ENTREGA", value=fecha("fecha_entrega"),
+                                                                   key=k("fent"), format="DD/MM/YYYY"))
+                nuevos["horario_entrega"] = e4.text_input("HORARIO DE ENTREGA", value=v("horario_entrega"), key=k("hent"))
+                e5, e6 = st.columns(2)
+                nuevos["telefono_entrega"] = e5.text_input("TELÉFONO (de quien recibe)", value=v("telefono_entrega"),
+                                                           key=k("tel_ent"))
+                nuevos["email_entrega"] = e6.text_input("E-MAIL (de quien recibe)", value=v("email_entrega"),
+                                                        key=k("mail_ent"))
+                nuevos["notas_entrega"] = st.text_input("NOTAS DE ENTREGA", value=v("notas_entrega"), key=k("notas_ent"))
+
+        facturado = bool(ped.get("no_factura"))
+        req_fac = st.checkbox("Este pedido lleva DATOS DE FACTURACIÓN", value=bool(ped.get("requiere_facturacion")),
+                              key=k("req_fac"), disabled=facturado and bool(ped.get("requiere_facturacion")),
+                              help="Ya tiene N° de factura: no se puede quitar." if facturado else None)
+        nuevos["requiere_facturacion"] = bool(req_fac)
+        if req_fac:
+            with st.container(border=True):
+                f1, f2 = st.columns(2)
+                nuevos["uso_cfdi"] = f1.text_input("USO DE CFDI", value=v("uso_cfdi"), key=k("cfdi"))
+                conc = v("concepto")
+                ops = CONCEPTOS_FACTURA + ([conc] if conc and conc not in CONCEPTOS_FACTURA else [])
+                nuevos["concepto"] = f2.selectbox("CONCEPTO *", ops, index=ops.index(conc) if conc in ops else None,
+                                                  key=k("concepto"), placeholder="Elegir…") or ""
+                f3, f4 = st.columns(2)
+                nuevos["telefono_facturacion"] = f3.text_input("TELÉFONO (de quien factura)",
+                                                               value=v("telefono_facturacion"), key=k("tel_fac"))
+                nuevos["email_facturacion"] = f4.text_input("E-MAIL (de quien factura)",
+                                                            value=v("email_facturacion"), key=k("mail_fac"))
+                nuevos["notas_facturacion"] = st.text_input("NOTAS DE FACTURACIÓN", value=v("notas_facturacion"),
+                                                            key=k("notas_fac"))
+
+        q_v, q_c = codigos.pedir_identidad(sb, k("id"))
+        if st.button("Guardar datos de entrega y facturación", type="primary", key=k("guardar")):
+            if req_fac and not nuevos.get("concepto"):
+                st.error("Elige el concepto de facturación (o desmarca los datos de facturación).")
+                return
+            quien = codigos.confirmar(sb, q_v, q_c)
+            if not quien:
+                return
+            # Lo que no se muestra (sección desmarcada) se conserva tal cual: si la vuelven a marcar, ahí sigue
+            datos = {c: (_nn(x) if isinstance(x, str) else x) for c, x in nuevos.items()}
+            cambios = [c for c, x in datos.items() if (ped.get(c) or None) != (x or None)
+                       and not (isinstance(x, bool) and bool(ped.get(c)) == x)]
+            if not cambios:
+                st.info("No hay cambios que guardar.")
+                return
+            try:
+                sb.table("pedidos").update(datos).eq("numero_pedido", sel).execute()
+            except Exception as ex:
+                st.error(f"No se pudo guardar: {ex}")
+                return
+            resumen = []
+            if "requiere_entrega" in cambios:
+                resumen.append("agregó entrega" if req_ent else "quitó entrega")
+            if "requiere_facturacion" in cambios:
+                resumen.append("agregó facturación" if req_fac else "quitó facturación")
+            otros = [c for c in cambios if c not in ("requiere_entrega", "requiere_facturacion")]
+            if otros:
+                resumen.append("cambió " + ", ".join(otros))
+            codigos.registrar(sb, quien, "Editó entrega/facturación", "pedido", sel, "; ".join(resumen))
+            st.session_state["vp_msg"] = f"Pedido {sel}: datos de entrega y facturación guardados."
+            st.rerun()
+
+
 def tab_nuevo_pedido(sb, user, desde_cot=False):
     ss = st.session_state
     ss.setdefault("vt_ver", 0)
@@ -1273,13 +1367,25 @@ def tab_pedidos(sb, user):
         g3.metric("FACTURADO SIN IVA", f"${_num(ped.get('facturado_sin_iva')):,.2f}")
         g4.metric("N° FACTURA", ped.get("no_factura") or "—")
 
-    try:
-        pdf = _generar_pdf(ped, items, [v["vendedor"] for v in vends])
-        botones_pedido(pdf, _generar_pdf(ped, items, [v["vendedor"] for v in vends], doble=True),
-                       f"pedido_{sel}.pdf", ped.get("telefono"),
+    # El PDF se arma solo cuando se pide (antes se armaban 2 en cada clic: ~15 MB y tiempo). Se guarda uno a la vez
+    # y se descarta si el pedido cambió.
+    firma = hash(repr((sorted(ped.items()), [sorted(i.items()) for i in items], [v["vendedor"] for v in vends])))
+    guardado = st.session_state.get("vp_pdf")
+    if guardado and (guardado.get("num") != sel or guardado.get("firma") != firma):
+        st.session_state.pop("vp_pdf", None)
+        guardado = None
+    if guardado is None:
+        if st.button("📄 Preparar PDF (descargar / imprimir / WhatsApp)", key=f"vp_prep_{sel}"):
+            try:
+                nombres = [v["vendedor"] for v in vends]
+                st.session_state["vp_pdf"] = {"num": sel, "firma": firma, "pdf": _generar_pdf(ped, items, nombres),
+                                              "pdf2": _generar_pdf(ped, items, nombres, doble=True)}
+                st.rerun()
+            except Exception as ex:
+                st.caption(f"No se pudo generar el PDF: {ex}")
+    else:
+        botones_pedido(guardado["pdf"], guardado["pdf2"], f"pedido_{sel}.pdf", ped.get("telefono"),
                        f"Hola {ped.get('cliente') or ''}, te comparto tu pedido N° {sel} de Viriathus.", f"p{sel}")
-    except Exception as ex:
-        st.caption(f"No se pudo generar el PDF: {ex}")
 
     if items:
         dfi = pd.DataFrame(items)
@@ -1358,6 +1464,9 @@ def tab_pedidos(sb, user):
                         st.session_state["vp_msg"] = mensaje
                         st.session_state["vp_avisos"] = avisos
                         st.rerun()
+
+    if user["role"] in ROLES_EDITAR and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
+        _editar_entrega_facturacion(sb, ped, sel)
 
     if puede_cancelar and items and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         with st.expander("Editar productos del pedido" + (" (modelo, precio, costo)" if ve_costos else " (modelo, precio, descuento)")):
