@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 import codigos
+import precios
 from caches import guardar_en_memoria
 from permisos import roles
 
@@ -220,6 +221,27 @@ def buscar_modelo(sb, modelo):
     }
 
 
+def reservado_por(sb, modelo):
+    """Nombre del vendedor de la cotización vigente que tiene apartado el modelo ("" si no se encuentra)."""
+    try:
+        its = (sb.table("cotizacion_items").select("cotizacion_id")
+               .eq("modelo", str(modelo)).eq("apartado", True).execute().data or [])
+        ids = list({i["cotizacion_id"] for i in its})
+        if not ids:
+            return ""
+        cots = (sb.table("cotizaciones").select("vendedor").in_("id", ids)
+                .eq("estado", "Vigente").limit(1).execute().data or [])
+        return str(cots[0].get("vendedor") or "").split("/")[0].strip() if cots else ""
+    except Exception:
+        return ""
+
+
+def texto_reservado(sb, modelo):
+    """«El modelo X ya está reservado por una cotización de NOMBRE»."""
+    quien = reservado_por(sb, modelo)
+    return f"El modelo {modelo} ya está reservado por una cotización" + (f" de {quien}" if quien else "")
+
+
 def _sync_shopify_disponibilidad(modelo, vendido):
     """Refleja vendido/disponible en Shopify (agotado / 1). Devuelve un aviso solo si falla."""
     try:
@@ -368,12 +390,15 @@ def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=
     return f"Pedido {numero} actualizado.", avisos
 
 
-def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario="", envio=None):
+def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario="", envio=None,
+                        permitir_precio=False, autorizo=None):
     """Reemplaza los renglones de un pedido ya guardado (modelo, descripción, cantidad, precio, costo) y
     recalcula subtotal / IVA / total / costo. Ajusta el inventario: los modelos que salen vuelven a
     disponible y los que entran se marcan vendidos.
     filas = [{"modelo","descripcion","cantidad","precio_unitario","costo_unitario","descuento_pct","orig": renglón anterior o None}]
-    Devuelve (mensaje, avisos). Lanza ValueError si algo no es válido."""
+    Sin `permitir_precio`, el precio y el descuento de los modelos se quedan como estaban (o los del inventario si
+    el modelo es nuevo). Con permiso, si cambian hace falta `autorizo`.
+    Devuelve (mensaje, avisos, cambios_precio). Lanza ValueError si algo no es válido."""
     numero = ped["numero_pedido"]
     if ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado":
         raise ValueError("Un pedido cancelado no se puede editar. Reactívalo primero.")
@@ -382,7 +407,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
     viejos = sb.table("pedido_items").select("*").eq("numero_pedido", numero).order("id").execute().data
     modelos_viejos = {str(i["modelo"]) for i in viejos if i.get("modelo")}
 
-    items, vistos = [], set()
+    items, vistos, cambios_precio = [], set(), []
     for n, f in enumerate(filas, 1):
         modelo = _nn(f.get("modelo"))
         orig = f.get("orig")
@@ -407,7 +432,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                 if info is None:
                     raise ValueError(f"Renglón {n}: el modelo {modelo} no existe en el inventario.")
                 if info.get("reservado") and not aceptar_vendidos:
-                    raise ValueError(f"Renglón {n}: el modelo {modelo} está RESERVADO por una cotización. "
+                    raise ValueError(f"Renglón {n}: {texto_reservado(sb, modelo)}. "
                                      "Conviértela a pedido desde Cotizaciones, o marca «Aceptar modelos que ya figuran como vendidos».")
                 if info["vendido"] and not aceptar_vendidos:
                     raise ValueError(f"Renglón {n}: el modelo {modelo} ya figura como vendido. "
@@ -420,10 +445,28 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                 if not costo_tocado:
                     costo = round(info["costo"], 2)
                 util_inv = info["utilidad_bruta"]
+        # Precio de referencia: el que ya tenía el renglón; el del inventario si el modelo es otro; 0 si es un S/N nuevo
+        if orig is not None and str(orig.get("modelo") or "") == (modelo or ""):
+            ref_p, ref_d = _num(orig.get("precio_unitario")), _num(orig.get("descuento_pct"))
+        elif modelo:
+            info_ref = info if (modelo and info is not None) else buscar_modelo(sb, modelo)
+            ref_p, ref_d = (_num(info_ref["precio"]) if info_ref else 0.0), 0.0
+        else:
+            ref_p, ref_d = 0.0, 0.0
+            if not permitir_precio:
+                raise ValueError(f"Renglón {n}: para agregar un S/N hay que ponerle precio, y eso necesita autorización: "
+                                 "marca la casilla «Cambiar precio…» y elige quién autorizó.")
+        if not permitir_precio:
+            precio = round(ref_p, 2)          # sin la casilla el precio no cambia
+        c = precios.cambio(modelo, f.get("descripcion"), ref_p, ref_d, precio, desc_pct)
+        if c:
+            cambios_precio.append(c)
         items.append({"es_sn": not modelo, "modelo": modelo, "descripcion": _nn(f.get("descripcion")),
                       "cantidad": cantidad, "precio_unitario": precio, "costo_unitario": costo,
                       "utilidad_bruta_inv": util_inv, "descuento_pct": desc_pct})
 
+    if cambios_precio and not autorizo:
+        raise ValueError("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
     envio_ant = round(_num(ped.get("envio")), 2)
     envio = envio_ant if envio is None else round(max(_num(envio), 0.0), 2)
     if envio and "envio" not in ped:
@@ -472,7 +515,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                       f"(${_num(ped.get('anticipo')):,.2f}): hay un saldo a favor del cliente. Revisa los pagos.")
     if ped.get("status") in SALDO_CERO and ped.get("status") != "Cancelado" and abs(calc["total"] - _num(ped.get("total"))) > 0.005:
         avisos.append("El pedido figura como pagado y su total cambió: revisa que los pagos registrados cuadren con el nuevo total.")
-    return f"Pedido {numero}: productos actualizados. {nota}", avisos
+    return f"Pedido {numero}: productos actualizados. {nota}", avisos, cambios_precio
 
 
 def actualizar_facturacion(sb, numero, efectivo, con_iva, sin_iva, no_factura, calcular_sin_iva=True):
@@ -676,6 +719,7 @@ def iniciar_conversion(sb, cot, items_cot):
         "precio_unitario": _num(i.get("precio_unitario")), "costo_unitario": _num(i.get("costo_unitario")),
         "utilidad_bruta_inv": _num(i.get("utilidad_bruta_inv")),
         "descuento_pct": _num(i.get("descuento_pct")),
+        "precio_lista": _num(i.get("precio_unitario")), "desc_lista": _num(i.get("descuento_pct")),
     } for i in items_cot]
     ss["vt_desde_cot"] = {"id": cot["id"], "codigo": cot.get("codigo"),
                           "apartados": [i["modelo"] for i in items_cot if i.get("apartado") and i.get("modelo")]}
@@ -710,7 +754,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         _mostrar_ultimo("np")
     else:
         st.subheader(f"Pasar a pedido la cotización {dc['codigo']}")
-        st.caption("Los productos, precios y descuentos vienen de la cotización (ya están apartados). Completa lo que falta "
+        st.caption("Los productos, precios y descuentos vienen de la cotización. Completa lo que falta "
                    "desde el pago en adelante y guarda.")
         if st.button("Cancelar conversión (la cotización sigue vigente)", key="vt_cancel_conv"):
             cancelar_conversion()
@@ -815,7 +859,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 st.error(f"El modelo {m} no existe en el inventario. Si no tiene número, usa 'Producto sin número (S/N)'.")
             else:
                 if prod.get("reservado") and not ss.get("vt_desde_cot"):
-                    st.warning(f"El modelo {m} está RESERVADO por una cotización vigente. Se agregó de todos modos; "
+                    st.warning(f"{texto_reservado(sb, m)}. Se agregó de todos modos; "
                                "si es la misma venta, mejor usa «Pasar a pedido» desde Cotizaciones.")
                 if prod["vendido"]:
                     ped_shop = _venta_shopify_de(sb, m)
@@ -831,6 +875,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                     "descripcion": prod["nombre"] or "Sin nombre", "cantidad": int(cant_txt),
                     "precio_unitario": prod["precio"], "costo_unitario": prod["costo"],
                     "utilidad_bruta_inv": prod["utilidad_bruta"], "descuento_pct": 0.0,
+                    "precio_lista": prod["precio"], "desc_lista": 0.0,
                 })
 
     with st.expander("Producto sin número de modelo (S/N)"):
@@ -845,6 +890,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             else:
                 sn_costo = 0.0
             sn_cant = s5.number_input("CANT.", min_value=1, value=1, step=1)
+            st.caption("El precio de un S/N necesita autorización de Viriato o Ernesto al guardar el pedido.")
             agregar_sn = st.form_submit_button("Agregar S/N")
         if agregar_sn:
             if not sn_nombre.strip() or sn_precio <= 0:
@@ -875,19 +921,33 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         h6.caption("DESC. %")
         h4.caption("TOTAL (con desc.)")
         quitar = None
+        precio_hab = precios.habilitado(k("precio"))
         for it in items:
             c1, c2, c3, c6, c4, c5 = st.columns([4, 1, 2, 1, 2, 1])
             etiqueta = "S/N" if it["es_sn"] else it["modelo"]
             c1.markdown(f"**{etiqueta}** — {it['descripcion']}")
             it["cantidad"] = c2.number_input("cant", min_value=1, value=int(it["cantidad"]), step=1,
                                              key=k(f"cant_{it['id']}"), label_visibility="collapsed")
-            it["precio_unitario"] = c3.number_input("precio", min_value=0.0, value=float(it["precio_unitario"]),
-                                                    step=50.0, format="%.2f", key=k(f"precio_{it['id']}"),
-                                                    label_visibility="collapsed")
-            it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=100.0,
-                                                  value=float(it.get("descuento_pct") or 0.0), step=5.0,
-                                                  format="%.1f", key=k(f"dsc_{it['id']}"),
-                                                  label_visibility="collapsed")
+            if not precio_hab:
+                # Precio bloqueado: el del inventario / cotización. Un S/N conserva el que se capturó (al guardar
+                # pide autorización). El descuento es libre hasta 10%.
+                if _num(it.get("precio_lista")) > 0:
+                    it["precio_unitario"] = float(it["precio_lista"])
+                c3.number_input("precio", value=float(it["precio_unitario"]), format="%.2f", disabled=True,
+                                key=k(f"precio_b_{it['id']}"), label_visibility="collapsed")
+                tope = max(precios.DESC_LIBRE, _num(it.get("desc_lista")))
+                it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=float(tope),
+                                                      value=float(min(_num(it.get("descuento_pct")), tope)),
+                                                      step=5.0, format="%.1f", key=k(f"dsc_{it['id']}"),
+                                                      label_visibility="collapsed")
+            else:
+                it["precio_unitario"] = c3.number_input("precio", min_value=0.0, value=float(it["precio_unitario"]),
+                                                        step=50.0, format="%.2f", key=k(f"precio_{it['id']}"),
+                                                        label_visibility="collapsed")
+                it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=100.0,
+                                                      value=float(it.get("descuento_pct") or 0.0), step=5.0,
+                                                      format="%.1f", key=k(f"dsc_h_{it['id']}"),
+                                                      label_visibility="collapsed")
             c4.markdown(f"**${calcular([it], 0.0, False, 0.0)['total']:,.2f}**")
             if c5.button("Quitar", key=k(f"del_{it['id']}")):
                 quitar = it["id"]
@@ -900,9 +960,12 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                                 help="Se suma al total, pero no cuenta para la utilidad ni la comisión. "
                                      "No lo agregues como producto S/N.")
         e4.markdown(f"**${envio:,.2f}**")
+        precio_hab, precio_aut = precios.control(k("precio"))
         if quitar:
             ss["vt_items"] = [i for i in items if i["id"] != quitar]
             st.rerun()
+    else:
+        precio_hab, precio_aut = False, None
 
     calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")), envio)
 
@@ -999,6 +1062,18 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             errores.append("El total es 0. Revisa los precios (o usa status Obsequio).")
         if req_fact and not concepto:
             errores.append("Elige el concepto de facturación (o desmarca los datos de facturación).")
+        cambios_precio = precios.cambios_de_items(items)
+        if cambios_precio and not precio_aut:
+            errores.append("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
+        if dc and not cancelado:
+            # cotización que no apartó (vigencia 0): revisar que sus modelos sigan disponibles
+            for it in items:
+                if it["es_sn"] or it["modelo"] in dc["apartados"]:
+                    continue
+                info = buscar_modelo(sb, it["modelo"])
+                if info and (info["vendido"] or info.get("reservado")):
+                    errores.append(f"El modelo {it['modelo']} ya está VENDIDO." if info["vendido"]
+                                   else texto_reservado(sb, it["modelo"]) + ".")
 
         if len(pagos) == 1 and pagos[0]["monto"] == 0:
             pagos[0]["monto"] = float(calc["total"])
@@ -1077,6 +1152,9 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                                       "Revísala en Cotizaciones.")
             codigos.registrar(sb, responsable, "Pedido creado" + (f" (de {dc['codigo']})" if dc else ""), "pedido", numero,
                               f"{cliente.strip()} · total ${calc['total']:,.2f}")
+            a = precios.registrar(sb, f"Pedido {numero}", cambios_precio, precio_aut, responsable)
+            if a:
+                avisos.append(a)
             _clientes_registrados.clear()   # que el cliente nuevo aparezca ya en las sugerencias
             pdf = pdf2 = None
             try:
@@ -1299,8 +1377,11 @@ def tab_pedidos(sb, user):
                                   **({"costo_unitario": _num(i.get("costo_unitario"))} if ve_costos else {}),
                                   "quitar": False}
                                  for i in items] + [dict(vacio), dict(vacio)])
+            clave_precio = f"vp_ei_p_{sel}_{vers}"
+            ei_hab = precios.habilitado(clave_precio)
             editado = st.data_editor(
                 base, num_rows="fixed", use_container_width=True, hide_index=True, key=f"vp_ei_{sel}_{vers}",
+                disabled=[] if ei_hab else ["precio_unitario"],
                 column_config={
                     "modelo": st.column_config.TextColumn("MODELO (vacío = S/N)"),
                     "descripcion": st.column_config.TextColumn("DESCRIPCIÓN"),
@@ -1316,6 +1397,11 @@ def tab_pedidos(sb, user):
             if envio_sn and not _num(ped.get("envio")):
                 st.info("Este pedido tiene el envío como producto S/N. Para separarlo: marca **QUITAR** en ese "
                         "renglón y pon el monto en **ENVÍO** (abajo).")
+            if not ei_hab:
+                st.caption("🔒 Precio bloqueado: los modelos toman el precio que ya tenían o el del inventario. Descuento "
+                           "libre hasta 10%. Para cambiar un precio, ponerle precio a un S/N o dar más descuento, marca "
+                           "la casilla de abajo.")
+            ei_hab, ei_aut = precios.control(clave_precio)
             tomar_inv = st.checkbox("Si cambio el modelo y no toco el precio/costo, tomarlos del inventario",
                                     value=True, key=f"vp_ei_inv_{sel}")
             acepta_v = st.checkbox("Aceptar modelos que ya figuran como vendidos", value=False, key=f"vp_ei_vend_{sel}")
@@ -1335,13 +1421,17 @@ def tab_pedidos(sb, user):
                     d["orig"] = items[idx_f] if isinstance(idx_f, int) and idx_f < len(items) else None
                     filas.append(d)
                 try:
-                    mensaje, avisos = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2, envio_ed)
+                    mensaje, avisos, cambios_p = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2,
+                                                                    envio_ed, ei_hab, ei_aut)
                 except ValueError as ex:
                     st.error(f"{ex}")
                 except Exception as ex:
                     st.error(f"No se pudo guardar: {ex}")
                 else:
                     codigos.registrar(sb, quien2, "Editó productos", "pedido", sel, mensaje)
+                    a = precios.registrar(sb, f"Pedido {sel}", cambios_p, ei_aut, quien2)
+                    if a:
+                        avisos = list(avisos) + [a]
                     st.session_state[f"vp_ei_v_{sel}"] = vers + 1      # el editor vuelve a leer el pedido guardado
                     st.session_state["vp_msg"] = mensaje
                     st.session_state["vp_avisos"] = avisos

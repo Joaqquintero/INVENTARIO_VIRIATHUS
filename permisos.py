@@ -31,6 +31,7 @@ PERMISOS = {
     "resumen_mensual":   (DIOS, ADMIN, CONTA, FACT),
     "comisiones":        (DIOS, ADMIN, CONTA, FACT),
     "codigos":           (DIOS,),                              # pestaña «Códigos» de vendedores
+    "avisos_precio":     (DIOS, ADMIN),                        # aviso de cambios de precio autorizados
 }
 
 

@@ -830,6 +830,12 @@ if puede(user, "shopify_botones"):
    if _difs_disp:
        st.warning(f"{len(_difs_disp)} pieza(s) con disponibilidad distinta entre el inventario y Shopify. "
                   "Ve a la pestaña «Shopify» para revisarlas.")
+# Cambios de precio autorizados (precios.py)
+try:
+   import precios as _precios
+   _precios.render_aviso(supabase, user)
+except Exception:
+   pass
 _bita.anotar("Encabezado y barra lateral (en cada clic)", _bita_ini, _bita.rss_mb())
 # Las pestañas que el rol no puede usar ni se muestran (ver permisos.py)
 _nombres_tabs = ["Consultar / Buscar"]
@@ -1051,7 +1057,12 @@ if tab1 is not None:
                           st.caption(str(pdata.get('NOMBRE') or 'Sin Nombre').strip())
                       
                           if is_reservado:
-                              st.warning("Estado: RESERVADO (cotización)")
+                              try:
+                                  from ventas import reservado_por as _reservado_por
+                                  _quien_res = _reservado_por(supabase, mod_p)
+                              except Exception:
+                                  _quien_res = ""
+                              st.warning("Estado: RESERVADO (cotización" + (f" de {_quien_res}" if _quien_res else "") + ")")
                           elif is_vendido:
                               st.error("Estado: VENDIDO")
                           else:

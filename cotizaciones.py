@@ -17,10 +17,11 @@ import pandas as pd
 import streamlit as st
 
 import codigos
+import precios
 import reservas
 from segundo_plano import TareaPeriodica
 from ventas import (calcular, buscar_modelo, catalogo, _num, _nn, _parse, _mostrar_ultimo,
-                    iniciar_conversion, tab_nuevo_pedido)
+                    iniciar_conversion, tab_nuevo_pedido, texto_reservado)
 
 from permisos import roles as _roles
 ROLES_COTIZAR = _roles("cotizar")
@@ -206,6 +207,7 @@ def _foto_a_jpeg(datos):
 
 def crear_cotizacion(sb, cab, items, usuario):
     """Guarda la cotización y aparta los productos. Si algún producto no se puede apartar, no se guarda nada.
+    Con vigencia 0 días no aparta nada: es solo la cotización (vale por hoy).
     cab = {cliente, vendedor, telefono, email, fecha, vigencia_dias, notas}
     items = [{es_sn, modelo, descripcion, medidas, cantidad, precio_unitario, descuento_pct, costo_unitario,
               utilidad_bruta_inv, foto_url, _foto (bytes o None)}]
@@ -237,7 +239,7 @@ def crear_cotizacion(sb, cab, items, usuario):
             })
         guardadas = sb.table("cotizacion_items").insert(filas).execute().data
         for fila in sorted(guardadas, key=lambda x: x["orden"]):
-            if fila["es_sn"]:
+            if fila["es_sn"] or int(cab["vigencia_dias"]) == 0:
                 continue
             ok, msg, aviso = _apartar_item(sb, fila["id"], fila["modelo"], fila["cantidad"])
             if not ok:
@@ -271,10 +273,11 @@ def renovar_cotizacion(sb, cot, dias):
     """Amplía la vigencia. Si ya estaba vencida, vuelve a apartar los productos (si siguen disponibles).
     Devuelve avisos. Lanza ValueError si algún producto ya no está disponible (no cambia nada)."""
     vence = hoy_mx() + dt.timedelta(days=int(dias))
-    if cot["estado"] == "Vigente":
+    sin_apartar = int(_num(cot.get("vigencia_dias"), 1)) == 0      # se hizo con vigencia 0: ahora sí aparta
+    if cot["estado"] == "Vigente" and not sin_apartar:
         sb.table("cotizaciones").update({"vence": vence.isoformat(), "vigencia_dias": int(dias)}).eq("id", cot["id"]).execute()
         return []
-    if cot["estado"] != "Vencida":
+    if cot["estado"] not in ("Vencida", "Vigente"):
         raise ValueError("Solo se pueden renovar cotizaciones vigentes o vencidas.")
     items = items_de(sb, cot["id"])
     hechos, avisos = [], []
@@ -291,21 +294,36 @@ def renovar_cotizacion(sb, cot, dias):
         if aviso:
             avisos.append(aviso)
     r = (sb.table("cotizaciones").update({"estado": "Vigente", "vence": vence.isoformat(), "vigencia_dias": int(dias)})
-         .eq("id", cot["id"]).eq("estado", "Vencida").execute())
+         .eq("id", cot["id"]).eq("estado", cot["estado"]).execute())
     if not r.data:
         raise ValueError("La cotización cambió mientras se reactivaba. Revísala.")
     return avisos
 
 
-def guardar_edicion(sb, cot, filas, quitar_ids):
+def guardar_edicion(sb, cot, filas, quitar_ids, permitir_precio=False, autorizo=None):
     """Cambia descripción, medidas, precio y descuento de los renglones (y quita los marcados).
-    filas = {id: {descripcion, medidas, precio_unitario, descuento_pct}}"""
+    filas = {id: {descripcion, medidas, precio_unitario, descuento_pct}}
+    Sin `permitir_precio` el precio y el descuento de los modelos no cambian; con permiso, si cambian hace falta
+    `autorizo`. Devuelve (avisos, cambios_precio)."""
     if cot["estado"] != "Vigente":
         raise ValueError("Solo se pueden editar cotizaciones vigentes.")
     actuales = items_de(sb, cot["id"])
     restantes = [i for i in actuales if i["id"] not in quitar_ids]
     if not restantes:
         raise ValueError("La cotización debe quedar con al menos un producto. Si ya no va, cancélala.")
+    cambios_precio = []
+    for it in restantes:
+        f = filas.get(it["id"])
+        if not f:
+            continue
+        if not permitir_precio:
+            f["precio_unitario"] = it["precio_unitario"]          # sin la casilla el precio no cambia
+        c = precios.cambio(None if it.get("es_sn") else it.get("modelo"), f.get("descripcion"), it["precio_unitario"],
+                           it.get("descuento_pct"), f.get("precio_unitario"), f.get("descuento_pct"))
+        if c:
+            cambios_precio.append(c)
+    if cambios_precio and not autorizo:
+        raise ValueError("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
     avisos = _liberar_items(sb, [i for i in actuales if i["id"] in quitar_ids])
     if quitar_ids:
         sb.table("cotizacion_items").delete().in_("id", list(quitar_ids)).execute()
@@ -320,7 +338,7 @@ def guardar_edicion(sb, cot, filas, quitar_ids):
         sb.table("cotizacion_items").update({
             "descripcion": _nn(f.get("descripcion")), "medidas": _nn(f.get("medidas")),
             "precio_unitario": precio, "descuento_pct": dsc, "total_linea": linea}).eq("id", it["id"]).execute()
-    return avisos
+    return avisos, cambios_precio
 
 
 def agregar_a_cotizacion(sb, cot, it, foto_bytes=None):
@@ -342,7 +360,7 @@ def agregar_a_cotizacion(sb, cot, it, foto_bytes=None):
         "costo_unitario": it.get("costo_unitario", 0.0), "utilidad_bruta_inv": it.get("utilidad_bruta_inv", 0.0),
         "foto_url": foto}).execute().data[0]
     avisos = []
-    if not it["es_sn"]:
+    if not it["es_sn"] and int(_num(cot.get("vigencia_dias"), 1)) > 0:     # vigencia 0: no aparta
         ok, msg, aviso = _apartar_item(sb, fila["id"], it["modelo"], it["cantidad"])
         if not ok:
             sb.table("cotizacion_items").delete().eq("id", fila["id"]).execute()
@@ -399,7 +417,7 @@ def _agregar_modelo_form(sb, items, ver, clave, avisar_reservado=True):
         st.error(f"El modelo {m} figura como VENDIDO: no se puede cotizar.")
         return False
     if p["disp"] == "r":
-        st.error(f"El modelo {m} ya está RESERVADO por otra cotización.")
+        st.error(f"{texto_reservado(sb, m)}.")
         return False
     if cant > max(p["stock"], 1):
         st.error(f"El modelo {m} solo tiene {max(p['stock'], 1):g} unidad(es) disponible(s).")
@@ -410,6 +428,7 @@ def _agregar_modelo_form(sb, items, ver, clave, avisar_reservado=True):
     items.append({
         "id": uuid.uuid4().hex[:8], "es_sn": False, "modelo": p["modelo"], "descripcion": p["nombre"] or "Sin nombre",
         "medidas": p["medidas"], "cantidad": int(cant), "precio_unitario": p["precio"],
+        "precio_lista": p["precio"], "desc_lista": 0.0,
         "descuento_pct": 0.0, "costo_unitario": p["costo"], "utilidad_bruta_inv": p["utilidad_bruta"],
         "foto_url": p["foto_url"] if existe else None, "foto_inv": existe,
     })
@@ -425,6 +444,7 @@ def _agregar_sn_form(items, ver, clave):
             s3, s4 = st.columns(2)
             precio = s3.number_input("PRECIO ($) *", min_value=0.0, step=50.0, format="%.2f")
             cant = s4.number_input("CANT.", min_value=1, value=1, step=1)
+            st.caption("El precio de un S/N necesita autorización de Viriato o Ernesto al guardar.")
             ok = st.form_submit_button("Agregar S/N")
     if not ok:
         return False
@@ -479,10 +499,15 @@ def tab_nueva(sb, user):
     telefono = c4.text_input("TELÉFONO", key=k("tel"))
     email = c5.text_input("E-MAIL", key=k("email"))
     v1, v2 = st.columns([1, 3])
-    dias = v1.number_input("VIGENCIA (días) *", min_value=1, max_value=60, value=DIAS_VIGENCIA, step=1, key=k("dias"),
-                           help="Los productos quedan apartados hasta esta fecha; después vuelven a estar disponibles.")
+    dias = v1.number_input("VIGENCIA (días) *", min_value=0, max_value=60, value=DIAS_VIGENCIA, step=1, key=k("dias"),
+                           help="Los productos quedan apartados hasta esta fecha; después vuelven a estar disponibles. "
+                                "Con 0 no se aparta nada: solo se hace la cotización.")
     vence = hoy_mx() + dt.timedelta(days=int(dias))
-    v2.caption(f"Se aparta hasta el **{vence.strftime('%d/%m/%Y')}** (inclusive).")
+    if int(dias) == 0:
+        v2.caption("**Vigencia 0: no se aparta ningún producto.** Solo se genera la cotización; si después se pasa a "
+                   "pedido, se revisa que los modelos sigan disponibles.")
+    else:
+        v2.caption(f"Se aparta hasta el **{vence.strftime('%d/%m/%Y')}** (inclusive).")
 
     st.divider()
     st.subheader("Productos")
@@ -492,6 +517,7 @@ def tab_nueva(sb, user):
         st.rerun()
 
     quitar = None
+    precio_hab = precios.habilitado(k("precio"))
     for it in items:
         with st.container(border=True):
             etiqueta = "S/N" if it["es_sn"] else f"Modelo {it['modelo']}"
@@ -505,12 +531,23 @@ def tab_nueva(sb, user):
             b1, b2, b3, b4 = st.columns([1, 2, 1, 2])
             it["cantidad"] = b1.number_input("Cant.", min_value=1, value=int(it["cantidad"]), step=1,
                                              key=k(f"cant_{it['id']}"))
-            it["precio_unitario"] = b2.number_input("Precio unit. ($)", min_value=0.0,
-                                                    value=float(it["precio_unitario"]), step=50.0, format="%.2f",
-                                                    key=k(f"precio_{it['id']}"))
-            it["descuento_pct"] = b3.number_input("Desc. %", min_value=0.0, max_value=100.0,
-                                                  value=float(it.get("descuento_pct") or 0.0), step=5.0, format="%.1f",
-                                                  key=k(f"dsc_{it['id']}"))
+            if not precio_hab:
+                # Precio bloqueado (un S/N conserva el capturado; al guardar pide autorización). Descuento libre hasta 10%.
+                if _num(it.get("precio_lista")) > 0:
+                    it["precio_unitario"] = float(it["precio_lista"])
+                b2.number_input("Precio unit. ($) 🔒", value=float(it["precio_unitario"]), format="%.2f", disabled=True,
+                                key=k(f"precio_b_{it['id']}"))
+                tope = max(precios.DESC_LIBRE, _num(it.get("desc_lista")))
+                it["descuento_pct"] = b3.number_input(f"Desc. % (hasta {tope:g})", min_value=0.0, max_value=float(tope),
+                                                      value=float(min(_num(it.get("descuento_pct")), tope)), step=5.0,
+                                                      format="%.1f", key=k(f"dsc_{it['id']}"))
+            else:
+                it["precio_unitario"] = b2.number_input("Precio unit. ($)", min_value=0.0,
+                                                        value=float(it["precio_unitario"]), step=50.0, format="%.2f",
+                                                        key=k(f"precio_{it['id']}"))
+                it["descuento_pct"] = b3.number_input("Desc. %", min_value=0.0, max_value=100.0,
+                                                      value=float(it.get("descuento_pct") or 0.0), step=5.0,
+                                                      format="%.1f", key=k(f"dsc_h_{it['id']}"))
             b4.metric("Total", f"${calcular([it], 0.0, False, 0.0)['total']:,.2f}")
             subida = st.file_uploader(
                 "Foto para esta cotización" + (" (opcional: ya hay una en el inventario)" if it.get("foto_inv")
@@ -522,6 +559,7 @@ def tab_nueva(sb, user):
         ss["ct_items"] = [i for i in items if i["id"] != quitar]
         st.rerun()
 
+    precio_hab, precio_aut = precios.control(k("precio")) if items else (False, None)
     calc = calcular(items, 0.0, False, 0.0)
     if items:
         t1, t2, t3 = st.columns(3)
@@ -535,7 +573,8 @@ def tab_nueva(sb, user):
     else:
         cod_resp = ""
         st.caption("Elige al menos un vendedor: el primero es el responsable y escribe su código para guardar.")
-    if st.button("Guardar cotización y apartar productos", type="primary", use_container_width=True, key=k("guardar")):
+    if st.button("Guardar cotización" + (" (sin apartar)" if int(dias) == 0 else " y apartar productos"),
+                 type="primary", use_container_width=True, key=k("guardar")):
         errores = []
         if not cliente.strip():
             errores.append("Falta el cliente.")
@@ -545,6 +584,9 @@ def tab_nueva(sb, user):
             errores.append("Agrega al menos un producto.")
         if any(i["precio_unitario"] <= 0 for i in items):
             errores.append("Hay productos sin precio. Captura el precio de cada uno.")
+        cambios_precio = precios.cambios_de_items(items)
+        if cambios_precio and not precio_aut:
+            errores.append("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
         if errores:
             for e in errores:
                 st.error("" + e)
@@ -564,7 +606,11 @@ def tab_nueva(sb, user):
                 st.error(f"No se pudo guardar la cotización: {ex}")
                 return
             codigos.registrar(sb, responsable, "Cotización creada", "cotizacion", codigo,
-                              f"{cliente.strip()} · total ${calc['total']:,.2f}")
+                              f"{cliente.strip()} · total ${calc['total']:,.2f}"
+                              + (" · sin apartar (vigencia 0)" if int(dias) == 0 else ""))
+            a = precios.registrar(sb, f"Cotización {codigo}", cambios_precio, precio_aut, responsable)
+            if a:
+                avisos.append(a)
             pdf = None
             try:
                 pdf = pdf_de_cotizacion(sb, cot_id)
@@ -572,7 +618,9 @@ def tab_nueva(sb, user):
                 avisos.append(f"La cotización se guardó, pero no se pudo generar el PDF ({ex}). "
                               "Puedes descargarlo desde «Guardadas».")
         ss["ct_ultimo"] = {"codigo": codigo, "pdf": pdf, "avisos": avisos,
-                           "msg": f"Cotización {codigo} guardada. Productos apartados hasta el {vence.strftime('%d/%m/%Y')}."}
+                           "msg": f"Cotización {codigo} guardada. " + (
+                               "No se apartó ningún producto (vigencia 0)." if int(dias) == 0
+                               else f"Productos apartados hasta el {vence.strftime('%d/%m/%Y')}.")}
         _reset_nueva()
         st.rerun()
 
@@ -658,6 +706,9 @@ def tab_guardadas(sb, user):
     if cot["estado"] in ("Vigente", "Vencida"):
         st.markdown("**Para renovar o editar, identifícate:**")
         q_v, q_c = codigos.pedir_identidad(sb, f"ctg_id_{cid}")
+    if cot["estado"] == "Vigente" and int(_num(cot.get("vigencia_dias"), 1)) == 0:
+        st.info("Cotización **sin apartar** (vigencia 0): los productos siguen disponibles para cualquiera. "
+                "«Renovar» la convierte en una cotización normal y aparta los productos.")
     if cot["estado"] == "Vigente":
         a1, a2 = st.columns(2)
         if a1.button("Pasar a pedido", type="primary", use_container_width=True, key=f"ctg_conv_{cid}"):
@@ -720,9 +771,11 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
                           "medidas": i.get("medidas") or "", "cantidad": i["cantidad"],
                           "precio_unitario": _num(i["precio_unitario"]), "descuento_pct": _num(i.get("descuento_pct")),
                           "quitar": False} for i in items])
+    clave_precio = f"ctg_ed_p_{cid}"
+    ed_hab = precios.habilitado(clave_precio)
     ed = st.data_editor(
         base, hide_index=True, use_container_width=True, key=f"ctg_ed_{cid}",
-        disabled=["id", "modelo", "cantidad"],
+        disabled=["id", "modelo", "cantidad"] + ([] if ed_hab else ["precio_unitario"]),
         column_config={"id": None, "modelo": st.column_config.TextColumn("MODELO"),
                        "descripcion": st.column_config.TextColumn("NOMBRE"),
                        "medidas": st.column_config.TextColumn("MEDIDAS"),
@@ -730,12 +783,19 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
                        "precio_unitario": st.column_config.NumberColumn("PRECIO UNIT.", min_value=0.0, format="$%.2f"),
                        "descuento_pct": st.column_config.NumberColumn("DESC. %", min_value=0.0, max_value=100.0, format="%.1f"),
                        "quitar": st.column_config.CheckboxColumn("QUITAR")})
+    if not ed_hab:
+        st.caption("🔒 Precio bloqueado; descuento libre hasta 10%. Para cambiar un precio, dar más descuento o "
+                   "agregar un S/N, marca la casilla de abajo.")
+    ed_hab, ed_aut = precios.control(clave_precio)
     st.caption("Usa el código de arriba («Identifícate») para guardar estos cambios.")
     if st.button("Guardar cambios", key=f"ctg_ed_guardar_{cid}") and (quien := codigos.confirmar(sb, q_v, q_c)):
         filas = {int(r["id"]): r for r in ed.to_dict("records")}
         quitar = [i for i, r in filas.items() if r.get("quitar")]
         try:
-            ss["ctg_avisos"] = guardar_edicion(sb, cot, filas, quitar)
+            ss["ctg_avisos"], cambios_p = guardar_edicion(sb, cot, filas, quitar, ed_hab, ed_aut)
+            a = precios.registrar(sb, f"Cotización {cot['codigo']}", cambios_p, ed_aut, quien)
+            if a:
+                ss["ctg_avisos"] = list(ss["ctg_avisos"]) + [a]
             codigos.registrar(sb, quien, "Editó cotización", "cotizacion", cot["codigo"],
                               f"{len(quitar)} producto(s) quitado(s)" if quitar else "precios/descuentos/medidas")
             ss["ctg_msg"] = "Cotización actualizada."
@@ -759,18 +819,29 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
                 av = agregar_a_cotizacion(sb, cot, it)
                 codigos.registrar(sb, quien, "Agregó producto a cotización", "cotizacion", cot["codigo"], it["modelo"])
                 ss["ctg_avisos"] = av
-                ss["ctg_msg"] = f"Modelo {it['modelo']} agregado y apartado."
+                ss["ctg_msg"] = f"Modelo {it['modelo']} agregado" + (
+                    " (sin apartar: vigencia 0)." if int(_num(cot.get("vigencia_dias"), 1)) == 0 else " y apartado.")
                 ss.pop(clave_pdf, None)
                 st.rerun()
             except Exception as ex:
                 st.error(f"{ex}")
     if _agregar_sn_form(nuevos, ver, "e"):
         it = nuevos.pop()
-        quien = codigos.confirmar(sb, q_v, q_c)
+        aut = precios.autorizo_de(f"ctg_ed_p_{cid}")
+        quien = None
+        if not aut:
+            st.error("El precio de un S/N necesita autorización: marca arriba la casilla «Cambiar precio…», elige quién "
+                     "autorizó y vuelve a agregarlo.")
+        else:
+            quien = codigos.confirmar(sb, q_v, q_c)
         if quien:
             try:
                 agregar_a_cotizacion(sb, cot, it)
                 codigos.registrar(sb, quien, "Agregó producto S/N a cotización", "cotizacion", cot["codigo"], it["descripcion"])
+                a = precios.registrar(sb, f"Cotización {cot['codigo']}",
+                                      [precios.cambio(None, it["descripcion"], 0, 0, it["precio_unitario"], 0)], aut, quien)
+                if a:
+                    ss["ctg_avisos"] = [a]
                 ss["ctg_msg"] = "Producto S/N agregado."
                 ss.pop(clave_pdf, None)
                 st.rerun()
