@@ -67,7 +67,7 @@ def reservar(sb, modelo, unidades):
     if est == "v":
         return False, f"El modelo {modelo} ya está vendido.", None, 0
     if est == "r":
-        return False, f"El modelo {modelo} ya está reservado por otra cotización.", None, 0
+        return False, f"El modelo {modelo} ya está reservado (cotización o remisión abierta).", None, 0
     stock = _num(d.get("CANTIDAD"), 1.0)
     if stock <= 0:
         stock = 1.0

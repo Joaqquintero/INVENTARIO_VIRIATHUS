@@ -198,7 +198,9 @@ def _subir_foto(sb, codigo, n, datos):
 def _foto_a_jpeg(datos):
     """Reduce y convierte la foto subida a JPEG (ligera para el PDF)."""
     from PIL import Image as PILImage, ImageOps
-    im = ImageOps.exif_transpose(PILImage.open(io.BytesIO(datos))).convert("RGB")
+    im = PILImage.open(io.BytesIO(datos))
+    im.draft("RGB", (2400, 2400))                       # abre reducido los JPEG enormes (menos memoria)
+    im = ImageOps.exif_transpose(im).convert("RGB")
     im.thumbnail((1200, 1200))
     out = io.BytesIO()
     im.save(out, "JPEG", quality=85)
@@ -373,7 +375,14 @@ def agregar_a_cotizacion(sb, cot, it, foto_bytes=None):
 def pdf_de_cotizacion(sb, cot_id):
     from cotizacion_pdf import generar_pdf_cotizacion
     cot = sb.table("cotizaciones").select("*").eq("id", cot_id).execute().data[0]
-    return generar_pdf_cotizacion(cot, items_de(sb, cot_id))
+    try:
+        return generar_pdf_cotizacion(cot, items_de(sb, cot_id))
+    finally:
+        try:                                   # devolver al sistema la memoria de las fotos
+            from segundo_plano import liberar_memoria
+            liberar_memoria()
+        except Exception:
+            pass
 
 
 # ----------------------------------------------------------------------

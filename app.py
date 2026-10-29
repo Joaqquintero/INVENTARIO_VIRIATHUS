@@ -449,20 +449,69 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY"]
 
 
+   def _idx(opciones, valor):
+       """Posición de la opción guardada (por el número «1 - …» o el texto); 0 si no se encuentra."""
+       v = str(valor or "").strip().upper()
+       for i, o in enumerate(opciones):
+           if v and (v == o.upper() or v.split(" ")[0] == o.split(" ")[0] or v in o.upper()):
+               return i
+       return 0
+
+   def _num_bloques(clave, n_inicial):
+       if clave not in st.session_state:
+           st.session_state[clave] = max(1, n_inicial)
+       return st.session_state[clave]
+
+   def _botones_bloques(clave, etiqueta):
+       b1, b2, _ = st.columns([2, 2, 4])
+       if b1.button(f"Añadir otra {etiqueta}" if etiqueta == "compra" else f"Añadir otro {etiqueta}",
+                    key=f"{prefix}_btn_add_{etiqueta}"):
+           st.session_state[clave] += 1
+           st.rerun()
+       if st.session_state[clave] > 1 and b2.button(f"Quitar la última" if etiqueta == "compra" else "Quitar el último",
+                                                     key=f"{prefix}_btn_del_{etiqueta}"):
+           st.session_state[clave] -= 1
+           st.rerun()
+
+   # ---------- Datos de Compra (puede haber varias; cada una con su costo) ----------
    st.subheader("Datos de Compra")
-   cc1, cc2, cc3 = st.columns(3)
-   with cc1:
-       prov_compra = st.text_input("PROVEEDOR DE COMPRA", value=str(datos_previos.get("PROVEEDOR_COMPRA", "")), key=f"{prefix}_provcompra")
-       forma_pago_compra = st.selectbox("FORMA DE PAGO A COMPRA", pago_opts, key=f"{prefix}_fp_compra")
-       fecha_adquisicion_compra = st.text_input("FECHA ADQUISICIÓN", value=str(datos_previos.get("FECHA_ADQUISICION", "")), placeholder="10/oct/26", key=f"{prefix}_fadq_compra")
-   with cc2:
-       quien_pago_compra = st.selectbox("QUIÉN PAGÓ (COMPRA)", pago_quien_opts, key=f"{prefix}_qp_compra")
-       fecha_pago_compra = st.text_input("FECHA DE PAGO COMPRA", value=str(datos_previos.get("FECHA_PAGO_COMPRA", "")), placeholder="10/oct/26", key=f"{prefix}_fpagocompra")
-   with cc3:
-       notas_pago_compra = st.text_input("NOTAS FORMA PAGO COMPRA", value=str(datos_previos.get("NOTAS_FORMA_PAGO_COMPRA", "")), key=f"{prefix}_notaspagocompra")
-       requerimientos = st.text_input("REQUERIMIENTOS", value=str(datos_previos.get("REQUERIMIENTOS", "")), key=f"{prefix}_req")
+   lista_compras = datos_previos.get("COMPRAS") or []
+   if not lista_compras:      # producto anterior: una sola compra con los campos sueltos
+       lista_compras = [{
+           "prov": str(datos_previos.get("PROVEEDOR_COMPRA", "")),
+           "fp": str(datos_previos.get("FORMA_PAGO_COMPRA", "")),
+           "qp": str(datos_previos.get("QUIEN_PAGO_COMPRA", "")),
+           "fadq": str(datos_previos.get("FECHA_ADQUISICION", "")),
+           "costo": datos_previos.get("COSTO_ADQUISICION", ""),
+           "fpago": str(datos_previos.get("FECHA_PAGO_COMPRA", "")),
+           "notas": str(datos_previos.get("NOTAS_FORMA_PAGO_COMPRA", "")),
+       }]
+   num_comp_key = f"num_comp_{prefix}"
+   compras_capturadas = []
+   for i_c in range(_num_bloques(num_comp_key, len(lista_compras))):
+       d_c = lista_compras[i_c] if i_c < len(lista_compras) else {}
+       n = i_c + 1
+       st.markdown(f"**Compra #{n}**")
+       k1, k2, k3 = st.columns(3)
+       c_prov = k1.text_input(f"PROVEEDOR DE COMPRA #{n}", value=str(d_c.get("prov", "") or ""), key=f"{prefix}_provcompra_{i_c}")
+       c_fp = k2.selectbox(f"FORMA DE PAGO A COMPRA #{n}", pago_opts, index=_idx(pago_opts, d_c.get("fp")), key=f"{prefix}_fp_compra_{i_c}")
+       c_qp = k3.selectbox(f"QUIÉN PAGÓ (COMPRA) #{n}", pago_quien_opts, index=_idx(pago_quien_opts, d_c.get("qp")), key=f"{prefix}_qp_compra_{i_c}")
+       k4, k5, k6 = st.columns(3)
+       c_fadq = k4.text_input(f"FECHA ADQUISICIÓN #{n}", value=str(d_c.get("fadq", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fadq_compra_{i_c}")
+       costo_prev = d_c.get("costo", "")
+       c_costo = k5.text_input(f"COSTO ADQUISICIÓN #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_adq_{i_c}")
+       c_fpago = k6.text_input(f"FECHA DE PAGO COMPRA #{n}", value=str(d_c.get("fpago", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fpagocompra_{i_c}")
+       c_notas = st.text_input(f"NOTAS FORMA PAGO COMPRA #{n}", value=str(d_c.get("notas", "") or ""), key=f"{prefix}_notaspagocompra_{i_c}")
+       compras_capturadas.append({"prov": c_prov, "fp": c_fp, "qp": c_qp, "fadq": c_fadq, "costo": to_float(c_costo),
+                                  "fpago": c_fpago, "notas": c_notas, "_txt": c_costo})
+   _botones_bloques(num_comp_key, "compra")
+   requerimientos = st.text_input("REQUERIMIENTOS", value=str(datos_previos.get("REQUERIMIENTOS", "")), key=f"{prefix}_req")
+   # Campos sueltos de siempre = la primera compra (los usan la búsqueda y las cargas de Excel)
+   _c0 = compras_capturadas[0]
+   prov_compra, forma_pago_compra, quien_pago_compra = _c0["prov"], _c0["fp"], _c0["qp"]
+   fecha_adquisicion_compra, fecha_pago_compra, notas_pago_compra = _c0["fadq"], _c0["fpago"], _c0["notas"]
 
-
+   # ---------- Datos de Restauro (varios; cada uno con su costo) ----------
    st.subheader("Datos de Restauro")
    lista_restauradores = datos_previos.get("RESTAURADORES", [])
    if not lista_restauradores:
@@ -473,36 +522,31 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "fecha": str(datos_previos.get("FECHA_PAGO_RESTAURO", "")),
            "notas": str(datos_previos.get("NOTAS_FORMA_PAGO_RESTAURO", ""))
        }]
-
+   # Productos anteriores: el costo de restauro estaba solo en Costos; pasa al primer restaurador
+   if not any("costo" in r for r in lista_restauradores) and lista_restauradores:
+       lista_restauradores = [dict(r) for r in lista_restauradores]
+       lista_restauradores[0]["costo"] = datos_previos.get("COSTO_RESTAURO", "")
 
    num_rest_key = f"num_rest_{prefix}"
-   if num_rest_key not in st.session_state:
-       st.session_state[num_rest_key] = len(lista_restauradores)
-
-
    restauradores_capturados = []
-   for idx_r in range(st.session_state[num_rest_key]):
+   for idx_r in range(_num_bloques(num_rest_key, len(lista_restauradores))):
        d_r = lista_restauradores[idx_r] if idx_r < len(lista_restauradores) else {}
-       st.markdown(f"**Restaurador #{idx_r + 1}**")
+       n = idx_r + 1
+       st.markdown(f"**Restaurador #{n}**")
        cr1, cr2, cr3 = st.columns(3)
-       with cr1:
-           p_rest = st.text_input(f"PROVEEDOR DE RESTAURO #{idx_r + 1}", value=str(d_r.get("prov", "")), key=f"{prefix}_pr_{idx_r}")
-           fp_rest = st.selectbox(f"FORMA DE PAGO RESTAURO #{idx_r + 1}", pago_opts, index=0 if "EFECTIVO" in str(d_r.get("fp", "")) else 1, key=f"{prefix}_fpr_{idx_r}")
-       with cr2:
-           qp_rest = st.selectbox(f"QUIÉN PAGÓ (RESTAURO) #{idx_r + 1}", pago_quien_opts, key=f"{prefix}_qpr_{idx_r}")
-           f_rest = st.text_input(f"FECHA DE PAGO RESTAURO #{idx_r + 1}", value=str(d_r.get("fecha", "")), placeholder="10/oct/26", key=f"{prefix}_fpr_fecha_{idx_r}")
-       with cr3:
-           n_rest = st.text_input(f"NOTAS FORMA PAGO RESTAURO #{idx_r + 1}", value=str(d_r.get("notas", "")), key=f"{prefix}_npr_{idx_r}")
-
-
+       p_rest = cr1.text_input(f"PROVEEDOR DE RESTAURO #{n}", value=str(d_r.get("prov", "") or ""), key=f"{prefix}_pr_{idx_r}")
+       fp_rest = cr2.selectbox(f"FORMA DE PAGO RESTAURO #{n}", pago_opts, index=_idx(pago_opts, d_r.get("fp")), key=f"{prefix}_fpr_{idx_r}")
+       qp_rest = cr3.selectbox(f"QUIÉN PAGÓ (RESTAURO) #{n}", pago_quien_opts, index=_idx(pago_quien_opts, d_r.get("qp")), key=f"{prefix}_qpr_{idx_r}")
+       cr4, cr5, cr6 = st.columns(3)
+       f_rest = cr4.text_input(f"FECHA DE PAGO RESTAURO #{n}", value=str(d_r.get("fecha", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fpr_fecha_{idx_r}")
+       costo_prev = d_r.get("costo", "")
+       c_rest_txt = cr5.text_input(f"COSTO RESTAURO #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_rest_{idx_r}")
+       n_rest = cr6.text_input(f"NOTAS FORMA PAGO RESTAURO #{n}", value=str(d_r.get("notas", "") or ""), key=f"{prefix}_npr_{idx_r}")
        restauradores_capturados.append({
-           "prov": p_rest, "fp": fp_rest, "qp": qp_rest, "fecha": f_rest, "notas": n_rest
+           "prov": p_rest, "fp": fp_rest, "qp": qp_rest, "fecha": f_rest, "notas": n_rest,
+           "costo": to_float(c_rest_txt), "_txt": c_rest_txt,
        })
-
-
-   if st.button("Añadir otro restaurador", key=f"{prefix}_btn_add_rest"):
-       st.session_state[num_rest_key] += 1
-       st.rerun()
+   _botones_bloques(num_rest_key, "restaurador")
 
 
    st.divider()
@@ -510,15 +554,22 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    # ---------- COSTOS BASE (manuales) ----------
    st.subheader("Registro de Costos Base")
    col_c1, col_c2, col_c3 = st.columns(3)
+   # Totales automáticos: suma de los costos de cada compra / cada restaurador (sección 3)
+   v_costo_adq = "x" if any(hay(c["_txt"]) for c in compras_capturadas) else ""
+   v_costo_rest = "x" if any(hay(r["_txt"]) for r in restauradores_capturados) else ""
+   tot_adq = round(sum(c["costo"] for c in compras_capturadas), 2)
+   tot_rest = round(sum(r["costo"] for r in restauradores_capturados), 2)
    with col_c1:
-       v_costo_adq = st.text_input("COSTO ADQUISICION ($)", value=str(datos_previos.get("COSTO_ADQUISICION", "")), key=f"{prefix}_c_adq")
+       mostrar_calculado("COSTO ADQUISICIÓN TOTAL ($)", tot_adq if v_costo_adq else None, f"{prefix}_c_adq_tot",
+                         "Suma de los costos de adquisición de cada compra")
        v_costo_fin = st.text_input("COSTO FINANCIERO ($)", value=str(datos_previos.get("COSTO_FINANCIERO", "")), key=f"{prefix}_c_fin")
    with col_c2:
-       v_costo_rest = st.text_input("COSTO RESTAURO ($)", value=str(datos_previos.get("COSTO_RESTAURO", "")), key=f"{prefix}_c_rest")
+       mostrar_calculado("COSTO RESTAURO TOTAL ($)", tot_rest if v_costo_rest else None, f"{prefix}_c_rest_tot",
+                         "Suma de los costos de cada restaurador")
        v_costo_fletes = st.text_input("COSTO FLETES ($)", value=str(datos_previos.get("COSTO_FLETES", "")), key=f"{prefix}_c_fletes")
    with col_c3:
        v_otros_costos = st.text_input("OTROS COSTOS ($)", value=str(datos_previos.get("OTROS_COSTOS", "")), key=f"{prefix}_c_otros")
-   c_adq, c_fin, c_rest = to_float(v_costo_adq), to_float(v_costo_fin), to_float(v_costo_rest)
+   c_adq, c_fin, c_rest = tot_adq, to_float(v_costo_fin), tot_rest
    c_fletes, c_otros = to_float(v_costo_fletes), to_float(v_otros_costos)
    # TOTAL COSTO. Si el producto viejo no tenía desglose pero sí un total (o costo registrado), se respeta.
    hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos])
@@ -669,7 +720,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "PROVEEDOR_COMPRA": prov_compra, "FORMA_PAGO_COMPRA": forma_pago_compra,
            "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
            "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
-           "REQUERIMIENTOS": requerimientos, "RESTAURADORES": restauradores_capturados,
+           "REQUERIMIENTOS": requerimientos,
+           "COMPRAS": [{k: v for k, v in c.items() if k != "_txt"} for c in compras_capturadas],
+           "RESTAURADORES": [{k: v for k, v in r.items() if k != "_txt"} for r in restauradores_capturados],
            "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
            "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
            "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
@@ -1058,11 +1111,11 @@ if tab1 is not None:
                       
                           if is_reservado:
                               try:
-                                  from ventas import reservado_por as _reservado_por
-                                  _quien_res = _reservado_por(supabase, mod_p)
+                                  from ventas import etiqueta_reserva as _etiqueta_reserva
+                                  _quien_res = _etiqueta_reserva(supabase, mod_p)
                               except Exception:
-                                  _quien_res = ""
-                              st.warning("Estado: RESERVADO (cotización" + (f" de {_quien_res}" if _quien_res else "") + ")")
+                                  _quien_res = "por una cotización"
+                              st.warning(f"Estado: RESERVADO {_quien_res}")
                           elif is_vendido:
                               st.error("Estado: VENDIDO")
                           else:

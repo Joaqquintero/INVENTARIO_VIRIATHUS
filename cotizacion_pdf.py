@@ -101,6 +101,8 @@ def _cargar_foto(it):
             else:
                 return None
         im = PILImage.open(io.BytesIO(crudo))
+        # Un JPEG de cámara (6000×4000) abierto completo ocupa ~70 MB: draft() lo abre ya reducido (1/2, 1/4, 1/8)
+        im.draft("RGB", (1000, 1300))
         im = ImageOps.exif_transpose(im).convert("RGB")
         im.thumbnail((500, 650))
         out = io.BytesIO()
@@ -270,7 +272,7 @@ def _hacer_paginas(cot):
 # Principal
 # ----------------------------------------------------------------------
 def generar_pdf_cotizacion(cot, items):
-    with ThreadPoolExecutor(max_workers=6) as ex:
+    with ThreadPoolExecutor(max_workers=3) as ex:          # 3 a la vez: menos memoria de pico
         fotos = list(ex.map(_cargar_foto, items))
 
     tarjetas = [_tarjeta(it, fotos[i]) for i, it in enumerate(items)]

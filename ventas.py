@@ -236,10 +236,22 @@ def reservado_por(sb, modelo):
         return ""
 
 
-def texto_reservado(sb, modelo):
-    """«El modelo X ya está reservado por una cotización de NOMBRE»."""
+def etiqueta_reserva(sb, modelo):
+    """«en la remisión abierta de JUAN» / «por una cotización de MARINA» / «por una cotización»."""
+    try:
+        from remisiones import reservado_en_remision
+        cliente = reservado_en_remision(sb, modelo)
+    except Exception:
+        cliente = ""
+    if cliente:
+        return f"en la remisión abierta de {cliente}"
     quien = reservado_por(sb, modelo)
-    return f"El modelo {modelo} ya está reservado por una cotización" + (f" de {quien}" if quien else "")
+    return "por una cotización" + (f" de {quien}" if quien else "")
+
+
+def texto_reservado(sb, modelo):
+    """«El modelo X ya está reservado por una cotización de NOMBRE» (o «en la remisión abierta de CLIENTE»)."""
+    return f"El modelo {modelo} ya está reservado {etiqueta_reserva(sb, modelo)}"
 
 
 def _sync_shopify_disponibilidad(modelo, vendido):
@@ -1269,21 +1281,71 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
 # PESTAÑA: PEDIDOS (consulta y cancelación)
 # ----------------------------------------------------------------------
 @guardar_en_memoria(ttl=30)
-def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite):
-    """Lista de pedidos (con memoria de 30 s; se borra sola al guardar cualquier cambio)."""
-    q = (_sb.table("pedidos")
-         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
-         .order("numero_pedido", desc=True).limit(limite))
-    if busq:
-        if busq.isdigit():
-            q = q.eq("numero_pedido", int(busq))
-        else:
-            q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
-    if filtro_status:
-        q = q.in_("status", list(filtro_status))
-    if sin_costo:
-        q = q.eq("costo_total", 0).neq("status", "Cancelado")
-    return q.execute().data
+def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtro_vend=(), filtro_forma=(),
+                   filtro_banco=()):
+    """Lista de pedidos (con memoria de 30 s; se borra sola al guardar cualquier cambio).
+    filtro_vend: pedidos donde participa cualquiera de esos vendedores.
+    filtro_forma / filtro_banco: pedidos con algún pago de esa forma de pago / en ese banco o caja.
+    Cada fila trae «pago»: cómo y a dónde se pagó («Efectivo · CAJA $1,000 + Transferencia · BBVA $500»)."""
+    def consulta(numeros=None):
+        q = (_sb.table("pedidos")
+             .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
+             .order("numero_pedido", desc=True).limit(limite))
+        if numeros is not None:
+            q = q.in_("numero_pedido", numeros)
+        if busq:
+            if busq.isdigit():
+                q = q.eq("numero_pedido", int(busq))
+            else:
+                q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
+        if filtro_status:
+            q = q.in_("status", list(filtro_status))
+        if sin_costo:
+            q = q.eq("costo_total", 0).neq("status", "Cancelado")
+        return q.execute().data
+
+    # Pedidos posibles según vendedor y pago (si hay esos filtros)
+    posibles = None
+    if filtro_vend:
+        posibles = {r["numero_pedido"] for r in (_sb.table("pedido_vendedores").select("numero_pedido")
+                                                 .in_("vendedor", list(filtro_vend)).limit(20000).execute().data or [])}
+    if filtro_forma or filtro_banco:
+        q = _sb.table("pedido_pagos").select("numero_pedido").limit(20000)
+        if filtro_forma:
+            q = q.in_("forma_pago", list(filtro_forma))
+        if filtro_banco:
+            q = q.in_("banco_caja", list(filtro_banco))
+        por_pago = {r["numero_pedido"] for r in (q.execute().data or [])}
+        posibles = por_pago if posibles is None else (posibles & por_pago)
+
+    if posibles is None:
+        filas = consulta()
+    else:
+        nums, filas = sorted(posibles, reverse=True), []
+        for i in range(0, len(nums), 300):          # de a 300 para no armar una consulta enorme
+            filas += consulta(nums[i:i + 300])
+            if len(filas) >= limite:
+                break
+        filas.sort(key=lambda r: r["numero_pedido"], reverse=True)
+        filas = filas[:limite]
+
+    # Columna «cómo y a dónde se pagó»
+    nums = [f["numero_pedido"] for f in filas]
+    pagos = {}
+    for i in range(0, len(nums), 300):
+        for p in (_sb.table("pedido_pagos").select("numero_pedido,forma_pago,banco_caja,monto")
+                  .in_("numero_pedido", nums[i:i + 300]).order("id").execute().data or []):
+            pagos.setdefault(p["numero_pedido"], []).append(p)
+    for f in filas:
+        ps = pagos.get(f["numero_pedido"], [])
+        partes = []
+        for p in ps:
+            t = " · ".join(x for x in (p.get("forma_pago"), p.get("banco_caja")) if x)
+            if len(ps) > 1:
+                t += f" ${_num(p.get('monto')):,.0f}"
+            partes.append(t)
+        f["pago"] = " + ".join(partes)
+    return filas
 
 
 def tab_pedidos(sb, user):
@@ -1306,18 +1368,28 @@ def tab_pedidos(sb, user):
 
     busq = st.text_input("Buscar por N° de pedido o por cliente", key="vp_busq").strip()
 
-    f1, f2 = st.columns([3, 2])
+    f1, f3, f2 = st.columns([3, 3, 2])
     status_opts = catalogo(sb, "status")
     filtro_status = f1.multiselect("Filtrar por status", status_opts, key="vp_f_status",
                                    placeholder="Todos los status")
+    filtro_vend = f3.multiselect("Filtrar por vendedor", catalogo(sb, "vendedor"), key="vp_f_vend",
+                                 placeholder="Todos los vendedores",
+                                 help="Pedidos donde participa ese vendedor (como responsable o compartido).")
+    g1, g2, _g3 = st.columns([3, 3, 2])
+    filtro_forma = g1.multiselect("Filtrar por forma de pago", catalogo(sb, "forma_pago"), key="vp_f_forma",
+                                  placeholder="Todas las formas de pago")
+    filtro_banco = g2.multiselect("Filtrar por banco / caja", catalogo(sb, "banco_caja"), key="vp_f_banco",
+                                  placeholder="Todos los bancos / cajas",
+                                  help="Pedidos con al menos un pago en ese banco o caja.")
     sin_costo = False
     if ve_costos:
         sin_costo = f2.checkbox("Solo pedidos sin costo", key="vp_f_sincosto",
                                 help="Pedidos con costo total en $0 (sin costo capturado). No incluye cancelados.")
-    hay_filtro = bool(busq or filtro_status or sin_costo)
+    hay_filtro = bool(busq or filtro_status or sin_costo or filtro_vend or filtro_forma or filtro_banco)
     limite = 500 if hay_filtro else 50
 
-    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, limite)
+    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, limite, tuple(filtro_vend),
+                          tuple(filtro_forma), tuple(filtro_banco))
     if not rows:
         st.info("No hay pedidos para mostrar con ese filtro." if hay_filtro else "No hay pedidos para mostrar.")
         return
@@ -1331,7 +1403,7 @@ def tab_pedidos(sb, user):
     df = pd.DataFrame(rows).rename(columns={
         "numero_pedido": "N° PEDIDO", "fecha": "FECHA", "cliente": "CLIENTE", "total": "TOTAL",
         "anticipo": "ANTICIPO", "saldo": "SALDO", "status": "STATUS", "estado_pedido": "OBSERVACIONES",
-        "costo_total": "COSTO"})
+        "costo_total": "COSTO", "pago": "PAGO (CÓMO Y DÓNDE)"})
     if not ve_costos and "COSTO" in df.columns:
         df = df.drop(columns=["COSTO"])
     st.dataframe(df, use_container_width=True, hide_index=True)
@@ -1386,6 +1458,12 @@ def tab_pedidos(sb, user):
     else:
         botones_pedido(guardado["pdf"], guardado["pdf2"], f"pedido_{sel}.pdf", ped.get("telefono"),
                        f"Hola {ped.get('cliente') or ''}, te comparto tu pedido N° {sel} de Viriathus.", f"p{sel}")
+    if ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
+        try:
+            from remisiones import boton_remision_pedido
+            boton_remision_pedido(sb, ped, user)
+        except Exception as ex:
+            st.caption(f"Remisiones no disponible: {ex}")
 
     if items:
         dfi = pd.DataFrame(items)
@@ -1799,5 +1877,8 @@ def render_ventas(sb, user):
         secciones.append(("Códigos", codigos.tab_codigos))
     # Solo se carga la sección elegida (con pestañas se cargaban todas en cada clic)
     from navegacion import selector
+    ir = st.session_state.pop("nav_ventas_ir", None)        # p. ej. «Ver remisión» desde un pedido
+    if ir in [n for n, _ in secciones]:
+        st.session_state["nav_ventas"] = st.session_state["nav_ventas__ultimo"] = ir
     elegida = selector([n for n, _ in secciones], "nav_ventas", "Sección de ventas")
     dict(secciones)[elegida](sb, user)
