@@ -20,6 +20,7 @@ import codigos
 import precios
 from caches import guardar_en_memoria
 from permisos import roles
+from navegacion import descargar
 
 IVA_FACTOR = 1.16
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
@@ -1744,7 +1745,7 @@ def tab_comisiones(sb, user):
             "status": "STATUS", "n_vendedores": "N° VENDEDORES",
             "subtotal_asignado": "SUBTOTAL ASIGNADO", "comision": "COMISIÓN"})
         st.dataframe(det, use_container_width=True, hide_index=True)
-        st.download_button("Descargar detalle (CSV)", det.to_csv(index=False).encode("utf-8-sig"),
+        descargar(st, "Descargar detalle (CSV)", det.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"comisiones_{anio}_{mes:02d}.csv", mime="text/csv")
 
 
@@ -1834,7 +1835,7 @@ def tab_resumen(sb, user):
 
     grafica = df.assign(MES=[MESES[m - 1][:3] for m in df["mes"]]).set_index("MES")[["ventas", "costos", "utilidad"]]
     st.bar_chart(grafica.rename(columns={"ventas": "Ventas sin IVA", "costos": "Costos", "utilidad": "Utilidad"}))
-    st.download_button("Descargar resumen (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
+    descargar(st, "Descargar resumen (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"resumen_mensual_{anio}.csv", mime="text/csv")
 
 

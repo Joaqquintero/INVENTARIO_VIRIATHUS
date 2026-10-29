@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from shopify_borrador import _gql
+from navegacion import descargar
 
 Q_PRODUCTOS = """
 query($cursor: String) {
@@ -261,7 +262,7 @@ def render_traer_descripciones(supabase):
     st.write(f"Se actualizarán **{n_nom}** nombres y **{n_des}** descripciones ({len(filas)} productos).")
     if not filas:
         return
-    st.download_button("Descargar respaldo (CSV) de lo que se va a cambiar", _csv(filas),
+    descargar(st, "Descargar respaldo (CSV) de lo que se va a cambiar", _csv(filas),
                        file_name="respaldo_nombre_descripcion.csv", mime="text/csv", key="desc_csv")
     if st.button(f"Aplicar a {len(filas)} productos", type="primary", key="desc_aplicar"):
         barra = st.progress(0.0)

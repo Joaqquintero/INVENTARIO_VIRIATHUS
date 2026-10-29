@@ -24,6 +24,7 @@ from ventas import (calcular, buscar_modelo, catalogo, _num, _nn, _parse, _mostr
                     iniciar_conversion, tab_nuevo_pedido, texto_reservado)
 
 from permisos import roles as _roles
+from navegacion import descargar
 ROLES_COTIZAR = _roles("cotizar")
 DIAS_VIGENCIA = 3
 ESTADOS = ("Vigente", "Convertida", "Vencida", "Cancelada")
@@ -477,7 +478,7 @@ def _mostrar_ultima(prefijo="ct"):
         st.warning(a)
     c1, c2 = st.columns([2, 1])
     if ult.get("pdf"):
-        c1.download_button(f"Descargar cotización {ult['codigo']} (PDF)", ult["pdf"],
+        descargar(c1, f"Descargar cotización {ult['codigo']} (PDF)", ult["pdf"],
                            file_name=f"cotizacion_{ult['codigo']}.pdf", mime="application/pdf",
                            type="primary", key=f"ct_dl_{ult['codigo']}")
     if c2.button("Ocultar", key=f"ct_hide_{ult['codigo']}"):
@@ -700,7 +701,7 @@ def tab_guardadas(sb, user):
             except Exception as ex:
                 st.error(f"No se pudo generar el PDF: {ex}")
     if ss.get(clave_pdf):
-        p2.download_button("Descargar PDF", ss[clave_pdf], file_name=f"cotizacion_{cot['codigo']}.pdf",
+        descargar(p2, "Descargar PDF", ss[clave_pdf], file_name=f"cotizacion_{cot['codigo']}.pdf",
                            mime="application/pdf", type="primary", key=f"ctg_dl_{cid}")
 
     avisos_msg = ss.pop("ctg_avisos", None)

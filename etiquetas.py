@@ -18,6 +18,7 @@ from reportlab.graphics.shapes import Drawing
 from reportlab.lib.units import mm
 from reportlab.lib.utils import simpleSplit
 from reportlab.pdfgen import canvas
+from navegacion import descargar
 
 # Rollos de la QL-800: (ancho del papel, largo) en mm. El PDF sale del tamaño exacto del rollo.
 ROLLOS = {
@@ -325,6 +326,6 @@ def render_etiquetas(sb):
     if st.session_state.get("et_pdf"):
         pdf, n = st.session_state["et_pdf"]
         st.success(f"Listo: {n} etiqueta(s).")
-        st.download_button("Descargar PDF de etiquetas", pdf, file_name="etiquetas.pdf", mime="application/pdf", key="et_desc")
+        descargar(st, "Descargar PDF de etiquetas", pdf, file_name="etiquetas.pdf", mime="application/pdf", key="et_desc")
         st.caption("Al imprimir, elige la Brother QL-800, el papel que coincide con tu rollo (p. ej. 29 mm × 90 mm), "
                    "tamaño real 100% (sin «ajustar a la página») y sin márgenes.")

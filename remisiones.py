@@ -31,6 +31,7 @@ import codigos
 import precios
 import reservas
 from permisos import roles as _roles
+from navegacion import descargar
 
 ROLES_REMISIONES = _roles("remisiones")
 MAX_DESC = 700
@@ -1032,7 +1033,7 @@ def _detalle(sb, user, rid):
                 except Exception:
                     pass
     if g:
-        p2.download_button("📥 Descargar PDF", g["pdf"], file_name=f"remision_{folio(rem).replace(' ', '_')}.pdf",
+        descargar(p2, "📥 Descargar PDF", g["pdf"], file_name=f"remision_{folio(rem).replace(' ', '_')}.pdf",
                            mime="application/pdf", type="primary", key=k("dl"))
 
     if abierta:

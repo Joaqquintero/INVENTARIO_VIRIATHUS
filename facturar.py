@@ -238,6 +238,7 @@ def facturado(p):
 
 
 from caches import guardar_en_memoria
+from navegacion import descargar
 
 
 def pedidos_con_factura(sb, desde):
@@ -472,7 +473,7 @@ def tab_por_facturar(sb, user):
     alto = 90 + 38 * len(partidas) + 16 * sum(len(x["avisos"]) for x in partidas)
     components.html(html_partidas(partidas), height=min(alto, 900), scrolling=alto > 900)
     nombre_xlsx = "factura_pedido_" + "_".join(str(p["numero_pedido"]) for p in elegidos)[:60] + ".xlsx"
-    st.download_button("📥 Descargar Excel para CONTPAQi", excel_contpaqi(partidas), file_name=nombre_xlsx,
+    descargar(st, "📥 Descargar Excel para CONTPAQi", excel_contpaqi(partidas), file_name=nombre_xlsx,
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                        type="primary", key=f"pf_xlsx_{nombre_xlsx}")
     st.caption("En CONTPAQi: elige el cliente → «Importar/Exportar Excel» → este archivo. "

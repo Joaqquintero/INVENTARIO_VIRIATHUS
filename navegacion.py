@@ -44,3 +44,13 @@ def selector(opciones, key, etiqueta="Sección"):
         liberar_pesados()          # se cambió de sección: fuera los PDFs que ya no se ven
     ss[f"{key}__ultimo"] = valor
     return valor
+
+
+def descargar(destino, *args, **kwargs):
+    """st.download_button que NO vuelve a correr la página al hacer clic (on_click="ignore", Streamlit 1.43+).
+    Sin eso, cada descarga redibujaba toda la sección (fotos incluidas) y subía la memoria.
+    `destino` es st o una columna. En un Streamlit viejo cae al comportamiento normal."""
+    try:
+        return destino.download_button(*args, on_click="ignore", **kwargs)
+    except TypeError:
+        return destino.download_button(*args, **kwargs)
