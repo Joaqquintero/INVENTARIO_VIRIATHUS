@@ -26,6 +26,7 @@ PERMISOS = {
     "cancelar_pedidos":  (DIOS, ADMIN, CONTA, FACT, INV, VEND),
     "editar_pedidos":    (DIOS, ADMIN, CONTA, FACT, INV, VEND),  # status / observaciones / facturación y efectivo
     "cotizar":           (DIOS, ADMIN, CONTA, FACT, INV, VEND),
+    "remisiones":        (DIOS, ADMIN, CONTA, FACT, INV, VEND),  # pestaña «Remisiones» (solo PDF, no guarda nada)
     "por_facturar":      (DIOS, ADMIN, CONTA, FACT),           # pestaña «Por facturar»
     "costos_rapidos":    (DIOS, ADMIN, CONTA, FACT),           # «⚡ Capturar costos pendientes»
     "resumen_mensual":   (DIOS, ADMIN, CONTA, FACT),

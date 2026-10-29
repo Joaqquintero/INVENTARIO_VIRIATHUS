@@ -1779,6 +1779,13 @@ def render_ventas(sb, user):
     except Exception as ex:
         st.caption(f"Cotizaciones no disponible: {ex}")
     try:
+        from remisiones import ROLES_REMISIONES, tab_remisiones
+        if user["role"] in ROLES_REMISIONES:
+            pos = [n for n, _ in secciones].index("Pedidos") + 1
+            secciones.insert(pos, ("Remisiones", tab_remisiones))
+    except Exception as ex:
+        st.caption(f"Remisiones no disponible: {ex}")
+    try:
         from facturar import ROLES_FACTURAR, tab_por_facturar
         if user["role"] in ROLES_FACTURAR:
             secciones.insert(secciones.index(("Pedidos", tab_pedidos)) + 1, ("Por facturar", tab_por_facturar))
