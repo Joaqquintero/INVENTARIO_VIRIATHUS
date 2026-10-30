@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { margin: 0; font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  canvas { width: 100%; height: 230px; background: #fff; border: 2px dashed #9a9284; border-radius: 10px;
+           touch-action: none; display: block; box-sizing: border-box; }
+  .botones { margin-top: 8px; display: flex; gap: 8px; }
+  button { flex: 1; font-size: 17px; padding: 12px; min-height: 48px; border-radius: 8px; border: 1px solid #9a9284;
+           background: #f4f1ea; color: #222; }
+  #listo { background: #c9b37e; border-color: #c9b37e; font-weight: 600; }
+  #msg { font-size: 14px; color: #8a8276; margin-top: 6px; }
+  .linea { position: relative; }
+  .linea::after { content: ""; position: absolute; left: 6%; right: 6%; bottom: 52px; border-bottom: 1px solid #ccc;
+                  pointer-events: none; }
+</style>
+</head>
+<body>
+<div class="linea"><canvas id="lienzo" aria-label="Recuadro para firmar"></canvas></div>
+<div class="botones">
+  <button id="borrar" type="button">Borrar</button>
+  <button id="listo" type="button">Listo</button>
+</div>
+<div id="msg">Firme con el dedo dentro del recuadro.</div>
+<script>
+// Protocolo de componentes de Streamlit (sin librerías): avisar que está listo, mandar valor y alto.
+function enviar(tipo, datos) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: tipo }, datos || {}), "*");
+}
+const c = document.getElementById("lienzo"), ctx = c.getContext("2d");
+let dibujando = false, hayTrazo = false;
+// El recuadro está dentro de un desplegable que empieza cerrado: al cargar mide 0 px de ancho.
+// Por eso el tamaño interno se ajusta cada vez que el recuadro cambia de tamaño (y justo antes de dibujar),
+// conservando lo que ya se firmó.
+function preparar() {
+  const r = c.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  const w = Math.round(r.width * d), h = Math.round(r.height * d);
+  if (!w || !h || (c.width === w && c.height === h)) return;
+  let copia = null;
+  if (hayTrazo && c.width && c.height) { copia = document.createElement("canvas"); copia.width = c.width;
+    copia.height = c.height; copia.getContext("2d").drawImage(c, 0, 0); }
+  c.width = w; c.height = h;
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  if (copia) ctx.drawImage(copia, 0, 0, w, h);
+  ctx.setTransform(d, 0, 0, d, 0, 0);
+  ctx.lineWidth = 2.8; ctx.lineCap = "round"; ctx.lineJoin = "round"; ctx.strokeStyle = "#111";
+}
+if (window.ResizeObserver) new ResizeObserver(preparar).observe(c);
+function punto(e) { const r = c.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; }
+c.addEventListener("pointerdown", e => {
+  preparar();
+  dibujando = true; try { c.setPointerCapture(e.pointerId); } catch (_) {}
+  const [x, y] = punto(e); ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 0.1, y + 0.1); ctx.stroke();
+  e.preventDefault();
+});
+c.addEventListener("pointermove", e => {
+  if (!dibujando) return;
+  const [x, y] = punto(e); ctx.lineTo(x, y); ctx.stroke(); hayTrazo = true; e.preventDefault();
+});
+["pointerup", "pointercancel"].forEach(t => c.addEventListener(t, () => { dibujando = false; }));
+function mensaje(t) { document.getElementById("msg").textContent = t; }
+document.getElementById("borrar").onclick = () => {
+  ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, c.width, c.height); ctx.restore(); hayTrazo = false;
+  enviar("streamlit:setComponentValue", { value: null, dataType: "json" });
+  mensaje("Firme con el dedo dentro del recuadro.");
+};
+document.getElementById("listo").onclick = () => {
+  if (!hayTrazo) { mensaje("Primero firme dentro del recuadro."); return; }
+  enviar("streamlit:setComponentValue", { value: c.toDataURL("image/png"), dataType: "json" });
+  mensaje("✓ Firma lista. Ahora toque «Guardar firma» abajo.");
+};
+window.addEventListener("message", () => {});
+enviar("streamlit:componentReady", { apiVersion: 1 });
+// Alto del cuadro: dentro del desplegable cerrado mide 0, así que se manda un mínimo fijo y se ajusta al abrirse
+function avisarAlto() {
+  enviar("streamlit:setFrameHeight", { height: Math.max(document.body.scrollHeight + 6, 330) });
+}
+window.addEventListener("load", () => { preparar(); avisarAlto(); });
+if (window.ResizeObserver) new ResizeObserver(avisarAlto).observe(document.body);
+</script>
+</body>
+</html>

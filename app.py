@@ -143,6 +143,9 @@ def _cargar_usuarios():
 
 
 USUARIOS = _cargar_usuarios()
+import sesion as _sesion
+import importlib.util as _ilu
+_HAY_CAUDAL = _ilu.find_spec("caudal") is not None      # Caudal se activa solo si está subido caudal.py
 
 
 def login():
@@ -150,8 +153,12 @@ def login():
    with col2:
        _l1, _l2, _l3 = st.columns([1, 1, 1])
        _l2.image(os.path.join(_DIR_ASSETS, "logo_escudo.png"), use_container_width=True)
+       if st.session_state.pop("_borrar_llave", False):
+           _sesion.olvidar()                # se cerró sesión: este navegador ya no entra solo
        username = st.text_input("Usuario", key="login_user")
        password = st.text_input("Contraseña", type="password", key="login_pass")
+       mantener = st.checkbox("Mantener la sesión iniciada en este equipo", value=True, key="login_mantener",
+                              help="No se cierra al suspender la compu o el celular ni con el tiempo; solo con «Cerrar Sesión».")
        btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
       
        if btn_login:
@@ -160,15 +167,23 @@ def login():
            elif username in USUARIOS and hmac.compare_digest(USUARIOS[username]["password"].encode(), password.encode()):
                st.session_state["logged_in"] = True
                st.session_state["user_info"] = USUARIOS[username]
+               st.session_state["login_usuario"] = username
+               st.session_state.pop("_sesion_cerrada", None)
+               if mantener:
+                   st.session_state["_recordar"] = True       # la llave se deja en el navegador al entrar
                st.success(f"Bienvenido, {USUARIOS[username]['nombre']}")
                st.rerun()
            else:
                st.error("Usuario o contraseña incorrectos")
 
 
+_sesion.entrar_solo(USUARIOS)          # llave guardada en el navegador → entra sin pedir contraseña
 if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
    login()
    st.stop()
+if st.session_state.pop("_recordar", False) and st.session_state.get("login_usuario") in USUARIOS:
+   _u = st.session_state["login_usuario"]
+   _sesion.recordar(_u, USUARIOS[_u]["password"])
 
 
 user = st.session_state["user_info"]
@@ -759,6 +774,14 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                _limpiar_memoria()          # que el producto nuevo aparezca ya en «últimos productos»
            except Exception:
                pass
+           # Caudal: los costos de compra / restauro que se cargaron o cambiaron restan a quien pagó
+           if _HAY_CAUDAL:
+               try:
+                   import caudal
+                   caudal.sincronizar_ficha(supabase, modelo, datos_previos, datos_guardar,
+                                            user.get("nombre") or user.get("role"))
+               except Exception as ex_caudal:
+                   st.warning(f"El producto se guardó, pero no se pudo registrar en Caudal: {ex_caudal}")
            if is_edit:
                st.success(f"¡Producto '{modelo}' actualizado correctamente!{info_foto}")
                # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
@@ -814,6 +837,8 @@ with st.sidebar:
   
    if st.button("Cerrar Sesión", use_container_width=True, key="btn_logout"):
        st.session_state["logged_in"] = False
+       st.session_state["_sesion_cerrada"] = True     # que no vuelva a entrar solo en esta pestaña
+       st.session_state["_borrar_llave"] = True       # y que el navegador olvide la llave
        st.rerun()
    if user["role"] == "Dios":
        import bitacora as _bit
@@ -900,6 +925,8 @@ if puede(user, "shopify_lista"):
     _nombres_tabs.append("Shopify")
 if MOSTRAR_VENTAS:
     _nombres_tabs.append("Ventas")
+if _HAY_CAUDAL and puede(user, "caudal"):
+    _nombres_tabs.append("Caudal")
 # Solo se carga la sección elegida (con st.tabs se cargaban todas en cada clic)
 from navegacion import selector as _selector
 _seccion = _selector(_nombres_tabs, "nav_principal")
@@ -928,6 +955,7 @@ tab2 = _seccion_si("Alta Manual")
 tab3 = _seccion_si("Herramientas & Scripts")
 tab5 = _seccion_si("Shopify")
 tab4 = _seccion_si("Ventas")
+tab_caudal = _seccion_si("Caudal")
 
 
 # DIÁLOGO DE EDICIÓN EN MODAL
@@ -1236,6 +1264,15 @@ if tab3 is not None:
 if tab4 is not None:
    with tab4:
        render_ventas(supabase, user)
+
+# CAUDAL: dinero por persona
+if tab_caudal is not None:
+   with tab_caudal:
+       try:
+           import caudal
+           caudal.render(supabase, user)
+       except Exception as ex:
+           st.error(f"Caudal no disponible: {ex}")
 
 
 # TAB 5: SHOPIFY

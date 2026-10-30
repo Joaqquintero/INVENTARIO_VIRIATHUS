@@ -542,7 +542,8 @@ def cerrar(sb, rem, items, usuario):
 # ----------------------------------------------------------------------
 # PDF
 # ----------------------------------------------------------------------
-def generar_pdf(rem, items, pagos=()):
+def generar_pdf(rem, items, pagos=(), firma=None):
+    """firma = firmas.para_pdf(...) (opcional): se estampa sobre «Recibió» en cada hoja."""
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_RIGHT
     from reportlab.lib.pagesizes import letter
@@ -695,13 +696,23 @@ def generar_pdf(rem, items, pagos=()):
         W = 220
         izq_x, der_x = MARGEN, letter[0] - MARGEN - W
         y_tit, y_linea, y_pie = 92, 50, 36
-        for x, titulo, debajo in ((izq_x, "Atentamente", "VIRIATHUS"), (der_x, "Recibió", "Nombre y firma")):
+        firmado = firma and firma.get("png")
+        recibio = f"{firma.get('nombre')} · {firma.get('fecha')}" if firmado else "Nombre y firma"
+        for x, titulo, debajo in ((izq_x, "Atentamente", "VIRIATHUS"), (der_x, "Recibió", recibio)):
             c.setFont("Times-Bold", 11)
             c.drawCentredString(x + W / 2, y_tit, titulo)
             c.setLineWidth(0.6)
             c.line(x, y_linea, x + W, y_linea)
             c.setFont("Times-Roman", 10)
             c.drawCentredString(x + W / 2, y_pie, debajo)
+        if firmado:                                         # la firma del cliente, encima de su línea
+            try:
+                w, h = ImageReader(io.BytesIO(firma["png"])).getSize()
+                esc = min((W - 20) / w, 34 / h)
+                c.drawImage(ImageReader(io.BytesIO(firma["png"])), der_x + (W - w * esc) / 2, y_linea + 2,
+                            width=w * esc, height=h * esc, mask="auto")
+            except Exception:
+                pass
         c.restoreState()
 
     buf = io.BytesIO()
@@ -1013,9 +1024,14 @@ def _detalle(sb, user, rid):
                 ss["rm_msgs"] = msgs
                 st.rerun()
 
+    # ---- Firma del cliente (opcional) ----
+    import firmas
+    fz = firmas.para_pdf(firmas.widget(sb, "remision", rid, "✍️ Firma de quien recibe"))
+
     # ---- PDF ----
     st.divider()
-    firma = hash(repr((sorted(rem.items()), [sorted(i.items()) for i in items], [sorted(p.items()) for p in pagos])))
+    firma = hash(repr((sorted(rem.items()), [sorted(i.items()) for i in items], [sorted(p.items()) for p in pagos],
+                       (fz or {}).get("id"))))
     g = ss.get("rm_pdf")
     if g and (g.get("rid") != rid or g.get("firma") != firma):
         ss.pop("rm_pdf", None)
@@ -1025,7 +1041,7 @@ def _detalle(sb, user, rid):
                  help="Guarda los cambios antes de preparar el PDF." if cambios else None):
         with st.spinner("Armando el PDF (descarga las fotos)…"):
             try:
-                ss["rm_pdf"] = {"rid": rid, "firma": firma, "pdf": generar_pdf(rem, items, pagos)}
+                ss["rm_pdf"] = {"rid": rid, "firma": firma, "pdf": generar_pdf(rem, items, pagos, fz)}
                 g = ss["rm_pdf"]
             except Exception as ex:
                 st.error(f"No se pudo generar el PDF: {ex}")

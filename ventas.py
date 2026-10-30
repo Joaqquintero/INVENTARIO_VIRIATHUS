@@ -1445,6 +1445,15 @@ def tab_pedidos(sb, user):
         g3.metric("FACTURADO SIN IVA", f"${_num(ped.get('facturado_sin_iva')):,.2f}")
         g4.metric("N° FACTURA", ped.get("no_factura") or "—")
 
+    # Firma del cliente (opcional): sale en el recuadro «Firma y nombre del Cliente» del PDF
+    try:
+        import firmas
+        fz = firmas.para_pdf(firmas.widget(sb, "pedido", sel))
+        if fz:
+            ped = dict(ped, _firma=fz)
+    except Exception as ex:
+        st.caption(f"Firma no disponible: {ex}")
+
     # El PDF se arma solo cuando se pide (antes se armaban 2 en cada clic: ~15 MB y tiempo). Se guarda uno a la vez
     # y se descarta si el pedido cambió.
     firma = hash(repr((sorted(ped.items()), [sorted(i.items()) for i in items], [v["vendedor"] for v in vends])))

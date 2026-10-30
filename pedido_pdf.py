@@ -497,8 +497,22 @@ def _story_pedido(pedido, items, vendedores, vacias=None):
     obs.setStyle(TableStyle([("LINEBELOW", (0, 1), (0, 3), 0.6, NEGRO), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                              ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
-    firma = Table([[_p("Firma y nombre del Cliente", ST_FIRMA)], [""]], colWidths=[170], rowHeights=[14, 56])
+    celda = ""
+    fz = pedido.get("_firma")
+    if fz and fz.get("png"):                 # firma dibujada en el teléfono del frente
+        try:
+            from reportlab.lib.utils import ImageReader
+            w, h = ImageReader(io.BytesIO(fz["png"])).getSize()
+            esc = min(158 / w, 32 / h)
+            img = Image(io.BytesIO(fz["png"]), width=w * esc, height=h * esc)
+            img.hAlign = "CENTER"
+            celda = [img, Paragraph(f"<font size='6.5'>{escape(fz.get('nombre') or '')} · {escape(fz.get('fecha') or '')}</font>",
+                                    ST_FIRMA)]
+        except Exception:
+            celda = ""
+    firma = Table([[_p("Firma y nombre del Cliente", ST_FIRMA)], [celda]], colWidths=[170], rowHeights=[14, 56])
     firma.setStyle(TableStyle([("BOX", (0, 0), (-1, -1), 0.6, NEGRO), ("LINEBELOW", (0, 1), (-1, 1), 1.2, NEGRO),
+                               ("ALIGN", (0, 1), (0, 1), "CENTER"),          # la firma, centrada en el recuadro
                                ("LEFTPADDING", (0, 0), (-1, -1), 4), ("RIGHTPADDING", (0, 0), (-1, -1), 4),
                                ("TOPPADDING", (0, 0), (-1, -1), 2), ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
                                ("BOTTOMPADDING", (0, 1), (-1, 1), 10)]))
