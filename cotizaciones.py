@@ -949,6 +949,38 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
         except Exception as ex:
             st.error(f"{ex}")
 
+    # ---- Foto de un producto (agregar o cambiar; solo para esta cotización) ----
+    st.markdown("**Foto de un producto**")
+    con_modelo = [i for i in items if not i.get("baja")]
+    if con_modelo:
+        etiquetas = {i["id"]: f"{i.get('modelo') or 'S/N'} — {i.get('descripcion') or ''}"
+                              + ("" if i.get("foto_url") else "  · ⚠ sin foto") for i in con_modelo}
+        f1, f2 = st.columns([1, 2])
+        sel_f = f1.selectbox("Producto", list(etiquetas), format_func=etiquetas.get, key=f"ctg_fsel_{cid}")
+        it_f = next(i for i in con_modelo if i["id"] == sel_f)
+        if it_f.get("foto_url"):
+            f1.image(it_f["foto_url"], width=130, caption="Foto actual")
+        else:
+            f1.caption("Este producto no tiene foto en la cotización.")
+        vf = ss.get(f"ctg_fver_{cid}", 0)
+        sub = f2.file_uploader("Nueva foto (solo para esta cotización; no cambia el inventario)",
+                               type=["jpg", "jpeg", "png", "webp"], key=f"ctg_fup_{cid}_{vf}")
+        if sub is not None:
+            f2.image(sub.getvalue(), width=130, caption="Nueva")
+        if f2.button("Guardar foto", key=f"ctg_fok_{cid}", disabled=sub is None) \
+                and (quien_f := codigos.confirmar(sb, q_v, q_c)):
+            try:
+                url = _subir_foto(sb, cot["codigo"], f"e{it_f['id']}", _foto_a_jpeg(sub.getvalue()))
+                sb.table("cotizacion_items").update({"foto_url": url}).eq("id", it_f["id"]).execute()
+                codigos.registrar(sb, quien_f, "Cambió foto de cotización", "cotizacion", cot["codigo"],
+                                  it_f.get("modelo") or it_f.get("descripcion") or "")
+                ss[f"ctg_fver_{cid}"] = vf + 1                 # vacía el campo de la foto
+                ss.pop(clave_pdf, None)                        # el PDF anterior ya no sirve
+                ss["ctg_msg"] = "Foto guardada. Vuelve a preparar el PDF para verla."
+                st.rerun()
+            except Exception as ex:
+                st.error(f"No se pudo guardar la foto: {ex}")
+
     st.markdown("**Agregar un producto**")
     ver = f"e{cid}"
     nuevos = ss.setdefault(f"ctg_nuevos_{cid}", [])
