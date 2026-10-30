@@ -160,9 +160,6 @@ def login():
        mantener = st.checkbox("Mantener la sesión iniciada en este equipo", value=True, key="login_mantener",
                               help="No se cierra al suspender la compu o el celular ni con el tiempo; solo con «Cerrar Sesión».")
        btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
-       if not _sesion.cookies_disponibles():
-           st.caption("Para mantener la sesión abierta hace falta Streamlit 1.37 o más nuevo "
-                      "(en tu compu: pip install -U streamlit).")
       
        if btn_login:
            if not USUARIOS:

@@ -12,12 +12,17 @@ deja en el navegador una «llave» firmada (cookie) que dura un año; al volver 
 import base64
 import hashlib
 import hmac
+import os
 import time
 
 import streamlit as st
 import streamlit.components.v1 as components
 
 COOKIE = "viriathus_sesion"
+# Componente chiquito que guarda / lee la llave en el almacenamiento del navegador (localStorage).
+# Es más confiable que la cookie: en Streamlit Cloud la cookie puede no llegar a la app.
+_almacen = components.declare_component(
+    "sesion_almacen", path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "sesion_componente"))
 DURACION = 365 * 24 * 3600          # un año
 
 
@@ -68,10 +73,11 @@ try {{ document.cookie = v; }} catch (e) {{}}
 
 def recordar(usuario, password):
     """Deja la llave en el navegador. Se llama en CADA recarga mientras la sesión está abierta (la llave se arma
-    una sola vez por sesión, así el cuadro no cambia): si una recarga rápida se lo «come», la siguiente la deja."""
+    una sola vez por sesión, así el componente no cambia): si una recarga rápida se lo «come», la siguiente la deja."""
     ss = st.session_state
     if ss.get("_llave_de") != usuario:
         ss["_llave"], ss["_llave_de"] = crear_llave(usuario, password), usuario
+    _almacen(accion="guardar", llave=ss["_llave"], key="ses_guardar", default=None)
     components.html(_cookie_js(ss["_llave"], DURACION), height=0)
 
 
@@ -87,6 +93,7 @@ def cookies_disponibles():
 def olvidar():
     st.session_state.pop("_llave", None)
     st.session_state.pop("_llave_de", None)
+    _almacen(accion="borrar", key="ses_borrar", default=None)
     components.html(_cookie_js("", 0), height=0)
 
 
@@ -101,8 +108,13 @@ def entrar_solo(usuarios):
         llave = None
     usuario = usuario_de_llave(llave, usuarios) if llave else None
     if not usuario:
+        # La llave del almacenamiento del navegador: la primera vuelta devuelve None (el componente todavía no
+        # contestó); cuando contesta, Streamlit recarga solo y aquí llega la llave.
+        llave = _almacen(accion="leer", key="ses_leer", default=None)
+        usuario = usuario_de_llave(llave, usuarios) if llave else None
+    if not usuario:
         return False
     ss["logged_in"] = True
     ss["login_usuario"] = usuario
     ss["user_info"] = usuarios[usuario]
-    return True
+    st.rerun()                                         # entra ya, sin mostrar la pantalla de inicio

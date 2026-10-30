@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="es">
+<head><meta charset="utf-8"></head>
+<body style="margin:0">
+<script>
+// Guarda / lee / borra la llave de la sesión en el almacenamiento del navegador (localStorage).
+// Protocolo de componentes de Streamlit sin librerías: componentReady → render (con args) → setComponentValue.
+const CLAVE = "viriathus_sesion";
+function enviar(tipo, datos) {
+  window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: tipo }, datos || {}), "*");
+}
+let respondido = false;
+window.addEventListener("message", (ev) => {
+  const d = ev.data || {};
+  if (d.type !== "streamlit:render") return;
+  const args = d.args || {};
+  try {
+    if (args.accion === "guardar" && args.llave) {
+      localStorage.setItem(CLAVE, args.llave);
+    } else if (args.accion === "borrar") {
+      localStorage.removeItem(CLAVE);
+    } else if (args.accion === "leer" && !respondido) {
+      respondido = true;
+      enviar("streamlit:setComponentValue", { value: localStorage.getItem(CLAVE) || "", dataType: "json" });
+    }
+  } catch (e) {
+    if (args.accion === "leer" && !respondido) {
+      respondido = true;
+      enviar("streamlit:setComponentValue", { value: "", dataType: "json" });
+    }
+  }
+});
+enviar("streamlit:componentReady", { apiVersion: 1 });
+enviar("streamlit:setFrameHeight", { height: 0 });
+</script>
+</body>
+</html>
