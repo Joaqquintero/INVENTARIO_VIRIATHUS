@@ -846,7 +846,10 @@ def _editor_items(sb, rem, items, k):
                                   help="Solo para la remisión; no cambia la foto del inventario.")
             if sub is not None:
                 fotos[iid] = sub.getvalue()
-                a.image(fotos[iid], width=90)
+                from cotizaciones import miniatura
+                mini = miniatura(fotos[iid])
+                if mini:
+                    a.image(mini, width=90)
             elif it.get("foto_url"):
                 a.image(it["foto_url"], width=90)
             else:

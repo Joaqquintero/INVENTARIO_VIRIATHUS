@@ -308,11 +308,26 @@ def _subir_foto(sb, codigo, n, datos):
     return f"{_url_foto_inventario(sb, 'x').rsplit('/', 1)[0]}/{ruta}"
 
 
+def miniatura(datos, lado=300):
+    """Vista previa chica (JPEG ~20 KB) de una foto subida, para mostrar en pantalla sin cargar la original."""
+    from PIL import Image as PILImage, ImageOps
+    try:
+        im = PILImage.open(io.BytesIO(datos))
+        im.draft("RGB", (lado, lado))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((lado, lado))
+        out = io.BytesIO()
+        im.save(out, "JPEG", quality=80)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
 def _foto_a_jpeg(datos):
     """Reduce y convierte la foto subida a JPEG (ligera para el PDF)."""
     from PIL import Image as PILImage, ImageOps
     im = PILImage.open(io.BytesIO(datos))
-    im.draft("RGB", (2400, 2400))                       # abre reducido los JPEG enormes (menos memoria)
+    im.draft("RGB", (1200, 1200))                       # abre ya reducido (1/2, 1/4…): ~4 veces menos memoria
     im = ImageOps.exif_transpose(im).convert("RGB")
     im.thumbnail((1200, 1200))
     out = io.BytesIO()
@@ -966,7 +981,9 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
         sub = f2.file_uploader("Nueva foto (solo para esta cotización; no cambia el inventario)",
                                type=["jpg", "jpeg", "png", "webp"], key=f"ctg_fup_{cid}_{vf}")
         if sub is not None:
-            f2.image(sub.getvalue(), width=130, caption="Nueva")
+            mini = miniatura(sub.getvalue())
+            if mini:
+                f2.image(mini, width=130, caption="Nueva")
         if f2.button("Guardar foto", key=f"ctg_fok_{cid}", disabled=sub is None) \
                 and (quien_f := codigos.confirmar(sb, q_v, q_c)):
             try:
