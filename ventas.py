@@ -1178,9 +1178,11 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 if it["es_sn"] or it["modelo"] in dc["apartados"]:
                     continue
                 info = buscar_modelo(sb, it["modelo"])
-                if info and (info["vendido"] or info.get("reservado")):
-                    errores.append(f"El modelo {it['modelo']} ya está VENDIDO." if info["vendido"]
-                                   else texto_reservado(sb, it["modelo"]) + ".")
+                if info and info["vendido"]:
+                    errores.append(f"El modelo {it['modelo']} ya está VENDIDO.")
+                elif info and info.get("reservado") and etiqueta_reserva(sb, it["modelo"]).startswith("en la remisión"):
+                    errores.append(texto_reservado(sb, it["modelo"]) + ".")
+                # apartado por OTRA cotización: se puede vender; en aquella queda dado de baja
 
         if len(pagos) == 1 and pagos[0]["monto"] == 0:
             pagos[0]["monto"] = float(calc["total"])

@@ -65,13 +65,21 @@ def items_de(sb, cot_id):
     return sb.table("cotizacion_items").select("*").eq("cotizacion_id", cot_id).order("orden").order("id").execute().data
 
 
-def totales_por_cotizacion(sb, ids):
+def totales_por_cotizacion(sb, ids, cots_por_id=None):
+    """{id: {total, piezas, bajas}} sin contar lo dado de baja (vendido en otro lado)."""
     if not ids:
         return {}
-    filas = sb.table("cotizacion_items").select("cotizacion_id,total_linea,cantidad").in_("cotizacion_id", ids).execute().data
+    filas = []
+    for k in range(0, len(ids), 200):
+        filas += sb.table("cotizacion_items").select("*").in_("cotizacion_id", ids[k:k + 200]).execute().data or []
+    if cots_por_id:
+        filas = revisar_bajas(sb, cots_por_id, filas)
     tot = {}
     for f in filas:
-        t = tot.setdefault(f["cotizacion_id"], {"total": 0.0, "piezas": 0})
+        t = tot.setdefault(f["cotizacion_id"], {"total": 0.0, "piezas": 0, "bajas": 0})
+        if f.get("baja"):
+            t["bajas"] += 1
+            continue
         t["total"] += _num(f.get("total_linea"))
         t["piezas"] += int(_num(f.get("cantidad"), 1))
     return tot
@@ -143,9 +151,113 @@ def _liberar_items(sb, items):
             if a:
                 avisos.append(a)
             sb.table("cotizacion_items").update({"apartado": False, "reservado": 0}).eq("id", it["id"]).execute()
+            if not a:                                   # quedó libre: ¿otra cotización lo tiene sin apartar?
+                p = pasar_reserva(sb, it["modelo"], excluir_cot=it.get("cotizacion_id"))
+                if p:
+                    avisos.append(p)
         except Exception as ex:
             avisos.append(f"Modelo {it['modelo']}: no se pudo liberar ({ex}).")
     return avisos
+
+
+def cotizacion_que_aparta(sb, modelo, excluir_cot=None):
+    """La cotización vigente que tiene apartado el modelo: {id, codigo, vendedor, cliente} o None."""
+    try:
+        its = (sb.table("cotizacion_items").select("cotizacion_id").eq("modelo", str(modelo))
+               .eq("apartado", True).execute().data or [])
+        ids = [i["cotizacion_id"] for i in its if i["cotizacion_id"] != excluir_cot]
+        if not ids:
+            return None
+        c = (sb.table("cotizaciones").select("id,codigo,vendedor,cliente").in_("id", ids)
+             .eq("estado", "Vigente").limit(1).execute().data or [])
+        return c[0] if c else None
+    except Exception:
+        return None
+
+
+def texto_en_cotizacion(c, modelo):
+    vend = str(c.get("vendedor") or "").split("/")[0].strip()
+    return (f"El modelo {modelo} ya está en la cotización {c.get('codigo')}"
+            + (f" de {vend}" if vend else "") + (f" (cliente: {c.get('cliente')})" if c.get("cliente") else ""))
+
+
+def _apartar_si_se_puede(sb, it_id, modelo, cantidad, cot_id=None):
+    """Aparta el renglón. Si el modelo ya lo tiene apartado OTRA cotización, queda compartido (sin apartar).
+    Devuelve (apartado: bool, aviso o None). Lanza ValueError si está vendido o en una remisión abierta."""
+    ok, msg, aviso = _apartar_item(sb, it_id, modelo, cantidad)
+    if ok:
+        return True, aviso
+    otra = cotizacion_que_aparta(sb, modelo, excluir_cot=cot_id)
+    if otra:
+        return False, (texto_en_cotizacion(otra, modelo) + ": se agregó sin apartar. Si esa cotización vence o se "
+                       "cancela, la reserva pasa a ésta; si se vende, aquí queda dado de baja.")
+    if "reservado" in str(msg):
+        raise ValueError(texto_reservado(sb, modelo) + ".")
+    raise ValueError(msg)
+
+
+def pasar_reserva(sb, modelo, excluir_cot=None):
+    """El modelo quedó libre: lo aparta la siguiente cotización vigente (la más vieja) que lo tenga sin apartar.
+    Devuelve un aviso o None."""
+    try:
+        its = (sb.table("cotizacion_items").select("*").eq("modelo", str(modelo)).execute().data or [])
+    except Exception:
+        return None
+    cands = [i for i in its if not i.get("apartado") and not i.get("baja") and i["cotizacion_id"] != excluir_cot]
+    if not cands:
+        return None
+    cots = {c["id"]: c for c in (sb.table("cotizaciones").select("id,codigo,estado,vigencia_dias")
+                                  .in_("id", list({i["cotizacion_id"] for i in cands})).execute().data or [])}
+    for i in sorted(cands, key=lambda x: x["cotizacion_id"]):
+        c = cots.get(i["cotizacion_id"])
+        if not c or c.get("estado") != "Vigente" or int(_num(c.get("vigencia_dias"), 1)) <= 0:
+            continue
+        ok, _, _ = _apartar_item(sb, i["id"], modelo, int(_num(i.get("cantidad"), 1)))
+        if ok:
+            return f"La reserva del modelo {modelo} pasó a la cotización {c['codigo']}."
+        return None
+    return None
+
+
+def _vendido_en(sb, modelo):
+    try:
+        r = (sb.table("pedido_items").select("numero_pedido").eq("modelo", str(modelo))
+             .order("numero_pedido", desc=True).limit(1).execute().data)
+        return f"Vendido en el pedido {r[0]['numero_pedido']}" if r else "Vendido"
+    except Exception:
+        return "Vendido"
+
+
+def revisar_bajas(sb, cots_por_id, items):
+    """Marca «dado de baja» los renglones de cotizaciones vigentes o vencidas cuyo modelo ya se vendió
+    (en otra cotización, un pedido o Shopify). Devuelve los items con «baja» puesto."""
+    pend = [i for i in items if i.get("modelo") and not i.get("baja")
+            and (cots_por_id.get(i["cotizacion_id"]) or {}).get("estado") in ("Vigente", "Vencida")]
+    if not pend:
+        return items
+    disp = {}
+    modelos = sorted({str(i["modelo"]) for i in pend})
+    for k in range(0, len(modelos), 100):
+        for f in (sb.table("productos").select("MODELO,datos_json").in_("MODELO", modelos[k:k + 100])
+                  .execute().data or []):
+            disp[str(f["MODELO"]).strip()] = reservas.estado_disp(_parse(f.get("datos_json")))
+    motivos = {}
+    for i in pend:
+        if disp.get(str(i["modelo"])) != "v":
+            continue
+        m = motivos.setdefault(str(i["modelo"]), _vendido_en(sb, i["modelo"]))
+        i["baja"] = m
+        i["apartado"], i["reservado"] = False, 0
+        try:
+            sb.table("cotizacion_items").update({"baja": m, "apartado": False, "reservado": 0}).eq("id", i["id"]).execute()
+        except Exception:
+            pass                       # sin la columna «baja» se calcula igual cada vez
+    return items
+
+
+def vigentes(items):
+    """Renglones que cuentan (sin los dados de baja)."""
+    return [i for i in items if not i.get("baja")]
 
 
 def _apartar_item(sb, it_id, modelo, cantidad):
@@ -244,10 +356,9 @@ def crear_cotizacion(sb, cab, items, usuario):
         for fila in sorted(guardadas, key=lambda x: x["orden"]):
             if fila["es_sn"] or int(cab["vigencia_dias"]) == 0:
                 continue
-            ok, msg, aviso = _apartar_item(sb, fila["id"], fila["modelo"], fila["cantidad"])
-            if not ok:
-                raise ValueError(msg)
-            apartados.append((fila["modelo"], _apartar_item.ultimas))
+            hecho, aviso = _apartar_si_se_puede(sb, fila["id"], fila["modelo"], fila["cantidad"], cot_id)
+            if hecho:
+                apartados.append((fila["modelo"], _apartar_item.ultimas))
             if aviso:
                 avisos.append(aviso)
     except Exception as ex:
@@ -284,16 +395,19 @@ def renovar_cotizacion(sb, cot, dias):
         raise ValueError("Solo se pueden renovar cotizaciones vigentes o vencidas.")
     items = items_de(sb, cot["id"])
     hechos, avisos = [], []
+    items = revisar_bajas(sb, {cot["id"]: cot}, items)
     for it in items:
-        if it["es_sn"] or not it.get("modelo"):
+        if it["es_sn"] or not it.get("modelo") or it.get("baja") or it.get("apartado"):
             continue
-        ok, msg, aviso = _apartar_item(sb, it["id"], it["modelo"], it["cantidad"])
-        if not ok:
+        try:
+            hecho, aviso = _apartar_si_se_puede(sb, it["id"], it["modelo"], it["cantidad"], cot["id"])
+        except ValueError as ex:
             for h in hechos:                      # deshacer lo ya apartado
                 reservas.liberar(sb, h["modelo"], h["_desc"])
                 sb.table("cotizacion_items").update({"apartado": False, "reservado": 0}).eq("id", h["id"]).execute()
-            raise ValueError(f"No se puede reactivar: {msg}")
-        hechos.append({**it, "_desc": _apartar_item.ultimas})
+            raise ValueError(f"No se puede reactivar: {ex}")
+        if hecho:
+            hechos.append({**it, "_desc": _apartar_item.ultimas})
         if aviso:
             avisos.append(aviso)
     r = (sb.table("cotizaciones").update({"estado": "Vigente", "vence": vence.isoformat(), "vigencia_dias": int(dias)})
@@ -364,10 +478,11 @@ def agregar_a_cotizacion(sb, cot, it, foto_bytes=None):
         "foto_url": foto}).execute().data[0]
     avisos = []
     if not it["es_sn"] and int(_num(cot.get("vigencia_dias"), 1)) > 0:     # vigencia 0: no aparta
-        ok, msg, aviso = _apartar_item(sb, fila["id"], it["modelo"], it["cantidad"])
-        if not ok:
+        try:
+            _, aviso = _apartar_si_se_puede(sb, fila["id"], it["modelo"], it["cantidad"], cot["id"])
+        except ValueError:
             sb.table("cotizacion_items").delete().eq("id", fila["id"]).execute()
-            raise ValueError(msg)
+            raise
         if aviso:
             avisos.append(aviso)
     return avisos
@@ -377,7 +492,8 @@ def pdf_de_cotizacion(sb, cot_id):
     from cotizacion_pdf import generar_pdf_cotizacion
     cot = sb.table("cotizaciones").select("*").eq("id", cot_id).execute().data[0]
     try:
-        return generar_pdf_cotizacion(cot, items_de(sb, cot_id))
+        items = revisar_bajas(sb, {cot["id"]: cot}, items_de(sb, cot_id))
+        return generar_pdf_cotizacion(cot, vigentes(items))          # lo vendido en otro lado no va
     finally:
         try:                                   # devolver al sistema la memoria de las fotos
             from segundo_plano import liberar_memoria
@@ -427,8 +543,12 @@ def _agregar_modelo_form(sb, items, ver, clave, avisar_reservado=True):
         st.error(f"El modelo {m} figura como VENDIDO: no se puede cotizar.")
         return False
     if p["disp"] == "r":
-        st.error(f"{texto_reservado(sb, m)}.")
-        return False
+        otra = cotizacion_que_aparta(sb, m)
+        if not otra:                                # reservado en una remisión abierta: no se puede
+            st.error(f"{texto_reservado(sb, m)}.")
+            return False
+        st.warning(texto_en_cotizacion(otra, m) + ". Se agregó de todos modos, sin apartar: si esa cotización vence "
+                   "o se cancela, la reserva pasa a ésta; si se vende, aquí queda dado de baja.")
     if cant > max(p["stock"], 1):
         st.error(f"El modelo {m} solo tiene {max(p['stock'], 1):g} unidad(es) disponible(s).")
         return False
@@ -659,13 +779,14 @@ def tab_guardadas(sb, user):
     if not cots:
         st.info("No hay cotizaciones con ese filtro.")
         return
-    tot = totales_por_cotizacion(sb, [c["id"] for c in cots])
+    tot = totales_por_cotizacion(sb, [c["id"] for c in cots], {c["id"]: c for c in cots})
     df = pd.DataFrame([{
         "Código": c["codigo"], "Cliente": c["cliente"], "Vendedor": c["vendedor"],
         "Fecha": _fecha(c["fecha"]).strftime("%d/%m/%Y"), "Vence": _fecha(c["vence"]).strftime("%d/%m/%Y"),
         "Restan": _restan(c["vence"], c["estado"]), "Estado": c["estado"],
         "Piezas": tot.get(c["id"], {}).get("piezas", 0), "Total": tot.get(c["id"], {}).get("total", 0.0),
         "N° pedido": c.get("numero_pedido") or ("PENDIENTE" if c["estado"] == "Vigente" else ""),
+        "Avisos": (f"⚠ {tot[c['id']]['bajas']} vendido(s)" if tot.get(c["id"], {}).get("bajas") else ""),
     } for c in cots])
     st.dataframe(df, use_container_width=True, hide_index=True,
                  column_config={"Total": st.column_config.NumberColumn(format="$%.2f")})
@@ -673,21 +794,35 @@ def tab_guardadas(sb, user):
     sel = st.selectbox("Abrir cotización", [c["codigo"] for c in cots], key="ctg_sel")
     cot = next(c for c in cots if c["codigo"] == sel)
     cid = cot["id"]
-    items = items_de(sb, cid)
+    items = revisar_bajas(sb, {cid: cot}, items_de(sb, cid))
     st.markdown(f"### {cot['codigo']} — {cot['cliente']}  · {cot['estado']}")
+    bajas = [i for i in items if i.get("baja")]
+    if bajas:
+        st.warning(f"⚠ {len(bajas)} producto(s) de esta cotización ya se vendieron: "
+                   + "; ".join(f"Modelo {i['modelo']} ({i['baja']})" for i in bajas)
+                   + ". Quedan dados de baja: fuera del total y del PDF.")
     st.caption(f"Vendedor: {cot['vendedor']} · Tel: {cot.get('telefono') or '—'} · E-mail: {cot.get('email') or '—'} · "
                f"Fecha: {_fecha(cot['fecha']).strftime('%d/%m/%Y')} · Válida hasta: {_fecha(cot['vence']).strftime('%d/%m/%Y')}"
                + (f" · Pedido N° {cot['numero_pedido']}" if cot.get("numero_pedido") else ""))
     if cot.get("notas"):
         st.caption(f"Notas: {cot['notas']}")
+    def _estado_reserva(i):
+        if i.get("baja"):
+            return f"❌ {i['baja']}"
+        if i.get("apartado"):
+            return "sí"
+        if i.get("modelo") and cot["estado"] == "Vigente" and int(_num(cot.get("vigencia_dias"), 1)) > 0:
+            otra = cotizacion_que_aparta(sb, i["modelo"], excluir_cot=cid)
+            return f"no · apartado en {otra['codigo']}" if otra else "no"
+        return ""
     dfi = pd.DataFrame([{"Modelo": i.get("modelo") or "S/N", "Nombre": i.get("descripcion"), "Medidas": i.get("medidas"),
                          "Cant.": i["cantidad"], "Precio": _num(i["precio_unitario"]),
-                         "Desc. %": _num(i.get("descuento_pct")), "Total": _num(i["total_linea"]),
-                         "Apartado": "sí" if i.get("apartado") else ""} for i in items])
+                         "Desc. %": _num(i.get("descuento_pct")), "Total": 0.0 if i.get("baja") else _num(i["total_linea"]),
+                         "Apartado": _estado_reserva(i)} for i in items])
     st.dataframe(dfi, use_container_width=True, hide_index=True,
                  column_config={"Precio": st.column_config.NumberColumn(format="$%.2f"),
                                 "Total": st.column_config.NumberColumn(format="$%.2f")})
-    st.markdown(f"**Total: ${sum(_num(i['total_linea']) for i in items):,.2f}**")
+    st.markdown(f"**Total: ${sum(_num(i['total_linea']) for i in vigentes(items)):,.2f}**")
 
     # ---- PDF ----
     clave_pdf = f"ctg_pdf_{cid}"
@@ -722,7 +857,7 @@ def tab_guardadas(sb, user):
     if cot["estado"] == "Vigente":
         a1, a2 = st.columns(2)
         if a1.button("Pasar a pedido", type="primary", use_container_width=True, key=f"ctg_conv_{cid}"):
-            iniciar_conversion(sb, cot, items)
+            iniciar_conversion(sb, cot, vigentes(items))          # lo vendido en otro lado no pasa
             st.rerun()
         with a2:
             r1, r2 = st.columns([1, 1])
