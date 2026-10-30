@@ -1009,11 +1009,12 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
     st.markdown("**Agregar un producto**")
     ver = f"e{cid}"
     nuevos = ss.setdefault(f"ctg_nuevos_{cid}", [])
+    pend_k = f"ctg_sinprecio_{cid}"
     if _agregar_modelo_form(sb, nuevos, ver, "e"):
         it = nuevos.pop()
         if it["precio_unitario"] <= 0:
-            st.error("El modelo no tiene precio en el inventario: agrégalo con el precio capturado como S/N, o ponle precio al "
-                     "inventario primero.")
+            ss[pend_k] = it                 # sin precio en el inventario: se captura abajo, con autorización
+            st.rerun()
         elif not (quien := codigos.confirmar(sb, q_v, q_c)):
             pass
         else:
@@ -1027,6 +1028,45 @@ def _editor_items(sb, cot, items, clave_pdf, q_v="", q_c=""):
                 st.rerun()
             except Exception as ex:
                 st.error(f"{ex}")
+    # Modelo sin precio en el inventario: se le pone precio aquí, con autorización de Viriato o Ernesto
+    pend = ss.get(pend_k)
+    if pend:
+        with st.container(border=True):
+            st.markdown(f"**Modelo {pend['modelo']} — {pend.get('descripcion') or ''}**")
+            st.caption("No tiene REDONDEO SHOWROOM en el inventario. Captura el precio para esta cotización; "
+                       "necesita autorización y les llega el aviso de cambio de precio.")
+            p1, p2 = st.columns([1, 2])
+            precio_n = p1.number_input("Precio ($)", min_value=0.0, step=50.0, format="%.2f", key=f"{pend_k}_precio")
+            aut_n = p2.radio("¿Quién autorizó el precio? *", precios.AUTORIZAN, index=None, horizontal=True,
+                             key=f"{pend_k}_aut")
+            b1, b2 = st.columns([1, 1])
+            if b1.button("Agregar con este precio", type="primary", key=f"{pend_k}_ok"):
+                if precio_n <= 0:
+                    st.error("Escribe el precio.")
+                elif not aut_n:
+                    st.error("Elige quién autorizó el precio.")
+                elif (quien := codigos.confirmar(sb, q_v, q_c)):
+                    it = dict(pend, precio_unitario=float(precio_n))
+                    try:
+                        av = agregar_a_cotizacion(sb, cot, it)
+                        a = precios.registrar(sb, f"Cotización {cot['codigo']}",
+                                              [precios.cambio(it["modelo"], it.get("descripcion"), 0, 0, precio_n, 0)],
+                                              aut_n, quien)
+                        codigos.registrar(sb, quien, "Agregó producto a cotización", "cotizacion", cot["codigo"],
+                                          f"{it['modelo']} · precio ${precio_n:,.2f} autorizado por {aut_n}")
+                        ss["ctg_avisos"] = list(av) + ([a] if a else [])
+                        ss["ctg_msg"] = f"Modelo {it['modelo']} agregado con precio ${precio_n:,.2f}."
+                        for x in (pend_k, f"{pend_k}_precio", f"{pend_k}_aut"):
+                            ss.pop(x, None)
+                        ss.pop(clave_pdf, None)
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"{ex}")
+            if b2.button("Cancelar", key=f"{pend_k}_no"):
+                for x in (pend_k, f"{pend_k}_precio", f"{pend_k}_aut"):
+                    ss.pop(x, None)
+                st.rerun()
+
     if _agregar_sn_form(nuevos, ver, "e"):
         it = nuevos.pop()
         aut = precios.autorizo_de(f"ctg_ed_p_{cid}")
