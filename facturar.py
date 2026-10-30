@@ -16,6 +16,8 @@ from decimal import Decimal, ROUND_HALF_UP
 
 import pandas as pd
 import streamlit as st
+
+from corte import pedido_desde
 import streamlit.components.v1 as components
 
 import codigos
@@ -257,6 +259,7 @@ def _pedidos_con_factura(sb, desde):
     def leer(cols):
         return (sb.table("pedidos").select(cols)
                 .eq("requiere_facturacion", True).gte("fecha", desde.isoformat())
+                .gte("numero_pedido", pedido_desde())
                 .order("numero_pedido", desc=True).limit(1000).execute().data)
     try:
         rows = leer(columnas + ",envio")

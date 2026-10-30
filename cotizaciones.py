@@ -17,6 +17,7 @@ import pandas as pd
 import streamlit as st
 
 import codigos
+from caches import guardar_en_memoria
 import precios
 import reservas
 from segundo_plano import TareaPeriodica
@@ -63,6 +64,13 @@ def listar_cotizaciones(sb, estados=None, limite=300):
 
 def items_de(sb, cot_id):
     return sb.table("cotizacion_items").select("*").eq("cotizacion_id", cot_id).order("orden").order("id").execute().data
+
+
+@guardar_en_memoria(ttl=60)
+def _totales_lista(_sb, ids, estados):
+    """Totales de la lista de cotizaciones (con memoria de 60 s: revisar lo vendido en cada clic era pesado).
+    Se borra sola al guardar cualquier cambio."""
+    return totales_por_cotizacion(_sb, list(ids), {i: {"estado": e} for i, e in estados})
 
 
 def totales_por_cotizacion(sb, ids, cots_por_id=None):
@@ -794,7 +802,7 @@ def tab_guardadas(sb, user):
     if not cots:
         st.info("No hay cotizaciones con ese filtro.")
         return
-    tot = totales_por_cotizacion(sb, [c["id"] for c in cots], {c["id"]: c for c in cots})
+    tot = _totales_lista(sb, tuple(c["id"] for c in cots), tuple((c["id"], c["estado"]) for c in cots))
     df = pd.DataFrame([{
         "Código": c["codigo"], "Cliente": c["cliente"], "Vendedor": c["vendedor"],
         "Fecha": _fecha(c["fecha"]).strftime("%d/%m/%Y"), "Vence": _fecha(c["vence"]).strftime("%d/%m/%Y"),

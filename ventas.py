@@ -16,6 +16,8 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
+from corte import pedido_desde
+
 import codigos
 import precios
 from caches import guardar_en_memoria
@@ -99,8 +101,8 @@ def _clientes_registrados(_sb):
     """Clientes distintos de la tabla pedidos: {nombre normalizado: {nombre, pedidos, ultima}}."""
     clientes, desde = {}, 0
     while True:
-        filas = (_sb.table("pedidos").select("cliente,fecha").order("fecha", desc=True)
-                 .range(desde, desde + 999).execute().data)
+        filas = (_sb.table("pedidos").select("cliente,fecha").gte("numero_pedido", pedido_desde())
+                 .order("fecha", desc=True).range(desde, desde + 999).execute().data)
         for r in filas:
             nombre = (r.get("cliente") or "").strip()
             nn = _norm(nombre)
@@ -1293,6 +1295,7 @@ def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtr
     def consulta(numeros=None):
         q = (_sb.table("pedidos")
              .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
+             .gte("numero_pedido", pedido_desde())                # los anteriores no se muestran (corte.py)
              .order("numero_pedido", desc=True).limit(limite))
         if numeros is not None:
             q = q.in_("numero_pedido", numeros)
@@ -1704,6 +1707,7 @@ def tab_comisiones(sb, user):
     if vend:
         q = q.in_("vendedor", vend)
     rows = q.range(0, 4999).execute().data
+    rows = [r for r in rows if "numero_pedido" not in r or int(r.get("numero_pedido") or 0) >= pedido_desde()]
     if not rows:
         st.info("No hay comisiones para ese mes.")
         return
@@ -1770,7 +1774,8 @@ def _resumen_mensual(sb, anio, solo_pagados=False):
     while True:
         r = (sb.table("pedidos")
              .select("numero_pedido,mes,subtotal,costo_total,utilidad,status,estado_pedido")
-             .eq("anio", anio).order("numero_pedido").range(desde, desde + 999).execute().data)
+             .eq("anio", anio).gte("numero_pedido", pedido_desde())
+             .order("numero_pedido").range(desde, desde + 999).execute().data)
         filas += r
         if len(r) < 1000:
             break

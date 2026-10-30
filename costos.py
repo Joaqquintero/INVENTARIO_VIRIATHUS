@@ -15,6 +15,8 @@ import re
 import pandas as pd
 import streamlit as st
 
+from corte import pedido_desde
+
 import codigos
 
 from permisos import roles as _roles
@@ -99,10 +101,10 @@ def _pendientes_mem_sin_cache(sb):
     """Devuelve (renglones, pedidos) de lo que falta costear, sin cancelados."""
     items = (sb.table("pedido_items")
              .select("id,numero_pedido,modelo,descripcion,cantidad,precio_unitario,total_linea,costo_unitario")
-             .or_("costo_unitario.eq.0,costo_unitario.is.null")
+             .or_("costo_unitario.eq.0,costo_unitario.is.null").gte("numero_pedido", pedido_desde())
              .order("numero_pedido", desc=True).limit(LIMITE).execute().data)
     # Pedidos con costo total 0 que no tienen renglones (importados del Excel)
-    peds0 = (sb.table("pedidos").select("numero_pedido").eq("costo_total", 0)
+    peds0 = (sb.table("pedidos").select("numero_pedido").eq("costo_total", 0).gte("numero_pedido", pedido_desde())
              .order("numero_pedido", desc=True).limit(LIMITE).execute().data)
     nums = {i["numero_pedido"] for i in items} | {p["numero_pedido"] for p in peds0}
     if not nums:
