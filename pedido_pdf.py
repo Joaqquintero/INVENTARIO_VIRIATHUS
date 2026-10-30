@@ -310,7 +310,7 @@ def items_desde_texto(texto):
 # ----------------------------------------------------------------------
 # Generador principal
 # ----------------------------------------------------------------------
-def _story_pedido(pedido, items, vendedores):
+def _story_pedido(pedido, items, vendedores, vacias=None):
     story = []
     sin_precios = False
     if not items:                                  # pedido importado del Excel: solo hay texto
@@ -421,7 +421,7 @@ def _story_pedido(pedido, items, vendedores):
     # Filas en blanco: menos cuando entran las secciones de entrega / facturación, para que todo quepa en una hoja
     n_sec = (1 if _mostrar_seccion(pedido, "requiere_entrega", ENTREGA_CAMPOS) else 0) + \
             (1 if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS) else 0)
-    n_vacias = max(0, (FILAS_MINIMAS + 3 - 3 * n_sec) - len(items))
+    n_vacias = max(0, (FILAS_MINIMAS + 3 - 3 * n_sec) - len(items)) if vacias is None else max(0, int(vacias))
     for _ in range(n_vacias):
         filas.append(["", "", "", "", ""])
     alturas = [24, 17] + [None] * len(items) + [20] * n_vacias
@@ -528,6 +528,8 @@ class _MarcaCopia(Flowable):
 def generar_pdf_pedido(pedido, items, vendedores, copias=None):
     """PDF del pedido. `copias` = lista de rótulos (p. ej. ["ORIGINAL", "COPIA CLIENTE"]): el pedido se repite
     una vez por rótulo, cada copia en hojas nuevas y con su rótulo en la esquina. Sin `copias`: una sola, sin rótulo."""
+    # Las filas en blanco de relleno se quitan de a una hasta que el pedido entre en UNA hoja (si se puede)
+    vacias = _filas_vacias_que_entran(pedido, items, vendedores)
     estado = {"copia": None}
     story = []
     for n, rotulo in enumerate(copias or [None]):
@@ -535,8 +537,26 @@ def generar_pdf_pedido(pedido, items, vendedores, copias=None):
             story.append(PageBreak())
         if rotulo:
             story.append(_MarcaCopia(estado, rotulo))
-        story += _story_pedido(pedido, items, vendedores)
+        story += _story_pedido(pedido, items, vendedores, vacias)
+    return _armar(pedido, story, estado, copias)
 
+
+def _filas_vacias_que_entran(pedido, items, vendedores):
+    """Cuántas filas en blanco caben sin pasar a una segunda hoja (None = las de siempre)."""
+    def hojas(vac):
+        return _armar(pedido, _story_pedido(pedido, items, vendedores, vac), {"copia": None}, None, contar=True)
+    if hojas(None) <= 1:
+        return None
+    n_sec = (1 if _mostrar_seccion(pedido, "requiere_entrega", ENTREGA_CAMPOS) else 0) + \
+            (1 if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS) else 0)
+    inicial = max(0, (FILAS_MINIMAS + 3 - 3 * n_sec) - len(items))
+    for vac in range(inicial - 1, -1, -1):
+        if hojas(vac) <= 1:
+            return vac
+    return 0                                     # ni sin relleno entra: van las hojas que hagan falta
+
+
+def _armar(pedido, story, estado, copias, contar=False):
     buf = io.BytesIO()
     pie, marca = _hacer_pie(dict(pedido, _sin_hoja=True) if copias and len(copias) > 1 else pedido)
 
@@ -554,4 +574,4 @@ def generar_pdf_pedido(pedido, items, vendedores, copias=None):
                   leftPadding=0, rightPadding=0, topPadding=0, bottomPadding=0)
     doc.addPageTemplates([PageTemplate(id="pagina", frames=[marco], onPage=pie, onPageEnd=fin_hoja)])
     doc.build(story)
-    return buf.getvalue()
+    return doc.page if contar else buf.getvalue()
