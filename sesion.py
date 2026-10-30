@@ -67,10 +67,26 @@ try {{ document.cookie = v; }} catch (e) {{}}
 
 
 def recordar(usuario, password):
-    components.html(_cookie_js(crear_llave(usuario, password), DURACION), height=0)
+    """Deja la llave en el navegador. Se llama en CADA recarga mientras la sesión está abierta (la llave se arma
+    una sola vez por sesión, así el cuadro no cambia): si una recarga rápida se lo «come», la siguiente la deja."""
+    ss = st.session_state
+    if ss.get("_llave_de") != usuario:
+        ss["_llave"], ss["_llave_de"] = crear_llave(usuario, password), usuario
+    components.html(_cookie_js(ss["_llave"], DURACION), height=0)
+
+
+def cookies_disponibles():
+    """False si este Streamlit es viejo (antes de 1.37) y no puede leer la llave."""
+    try:
+        st.context.cookies
+        return True
+    except Exception:
+        return False
 
 
 def olvidar():
+    st.session_state.pop("_llave", None)
+    st.session_state.pop("_llave_de", None)
     components.html(_cookie_js("", 0), height=0)
 
 

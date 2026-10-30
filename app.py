@@ -160,6 +160,9 @@ def login():
        mantener = st.checkbox("Mantener la sesión iniciada en este equipo", value=True, key="login_mantener",
                               help="No se cierra al suspender la compu o el celular ni con el tiempo; solo con «Cerrar Sesión».")
        btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
+       if not _sesion.cookies_disponibles():
+           st.caption("Para mantener la sesión abierta hace falta Streamlit 1.37 o más nuevo "
+                      "(en tu compu: pip install -U streamlit).")
       
        if btn_login:
            if not USUARIOS:
@@ -169,8 +172,7 @@ def login():
                st.session_state["user_info"] = USUARIOS[username]
                st.session_state["login_usuario"] = username
                st.session_state.pop("_sesion_cerrada", None)
-               if mantener:
-                   st.session_state["_recordar"] = True       # la llave se deja en el navegador al entrar
+               st.session_state["_recordar"] = bool(mantener)   # la llave se deja en el navegador al entrar
                st.success(f"Bienvenido, {USUARIOS[username]['nombre']}")
                st.rerun()
            else:
@@ -181,9 +183,6 @@ _sesion.entrar_solo(USUARIOS)          # llave guardada en el navegador → entr
 if "logged_in" not in st.session_state or not st.session_state["logged_in"]:
    login()
    st.stop()
-if st.session_state.pop("_recordar", False) and st.session_state.get("login_usuario") in USUARIOS:
-   _u = st.session_state["login_usuario"]
-   _sesion.recordar(_u, USUARIOS[_u]["password"])
 
 
 user = st.session_state["user_info"]
@@ -835,10 +834,15 @@ with st.sidebar:
    st.write(f"**Rol:** `{user['role']}`")
    st.divider()
   
+   # La llave para no tener que volver a iniciar sesión (se deja en cada recarga; no ocupa lugar)
+   if st.session_state.get("_recordar") and st.session_state.get("login_usuario") in USUARIOS:
+       _u = st.session_state["login_usuario"]
+       _sesion.recordar(_u, USUARIOS[_u]["password"])
    if st.button("Cerrar Sesión", use_container_width=True, key="btn_logout"):
        st.session_state["logged_in"] = False
        st.session_state["_sesion_cerrada"] = True     # que no vuelva a entrar solo en esta pestaña
        st.session_state["_borrar_llave"] = True       # y que el navegador olvide la llave
+       st.session_state["_recordar"] = False
        st.rerun()
    if user["role"] == "Dios":
        import bitacora as _bit
