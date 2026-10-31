@@ -348,6 +348,50 @@ def reactivar_modelos(sb, numero):
     return avisos
 
 
+def editar_pagos(sb, ped, filas, usuario=""):
+    """Corrige los cobros ya registrados de un pedido: forma de pago, banco / caja, monto y fecha.
+    filas = [{"id", "forma_pago", "banco_caja", "monto", "fecha_pago"}]. Recalcula lo cobrado (anticipo).
+    Devuelve el texto de lo que cambió. Lanza ValueError si algo no es válido."""
+    numero = ped["numero_pedido"]
+    actuales = {p["id"]: p for p in (sb.table("pedido_pagos").select("*").eq("numero_pedido", numero)
+                                     .execute().data or [])}
+    total = round(_num(ped.get("total")), 2)
+    cambios, nuevos = [], {}
+    for f in filas:
+        p = actuales.get(f.get("id"))
+        if not p:
+            continue
+        forma = _nn(str(f.get("forma_pago") or ""))
+        if not forma:
+            raise ValueError("Cada cobro necesita su forma de pago.")
+        monto = round(_num(f.get("monto")), 2)
+        if monto <= 0:
+            raise ValueError("Cada cobro necesita un monto mayor que 0.")
+        fecha = f.get("fecha_pago")
+        fecha = fecha.isoformat() if hasattr(fecha, "isoformat") else (_nn(str(fecha or "")) or None)
+        datos = {"forma_pago": forma, "banco_caja": _nn(str(f.get("banco_caja") or "")), "monto": monto,
+                 "fecha_pago": fecha[:10] if fecha else None}
+        antes = {"forma_pago": p.get("forma_pago") or None, "banco_caja": p.get("banco_caja") or None,
+                 "monto": round(_num(p.get("monto")), 2), "fecha_pago": str(p.get("fecha_pago"))[:10] if p.get("fecha_pago") else None}
+        if antes != datos:
+            nuevos[p["id"]] = datos
+            cambios.append(f"{p.get('forma_pago')} · {p.get('banco_caja') or '—'} · ${_num(p.get('monto')):,.2f} → "
+                           f"{forma} · {datos['banco_caja'] or '—'} · ${monto:,.2f}")
+    if not nuevos:
+        raise ValueError("No hay cambios que guardar.")
+    suma = round(sum(nuevos.get(i, {}).get("monto", _num(p.get("monto"))) for i, p in actuales.items()), 2)
+    if suma > total + 0.01:
+        raise ValueError(f"Los cobros sumarían ${suma:,.2f} y el total del pedido es ${total:,.2f}.")
+    for i, datos in nuevos.items():
+        sb.table("pedido_pagos").update(datos).eq("id", i).execute()
+    fechas = [d.get("fecha_pago") for d in (nuevos.get(i, p) for i, p in actuales.items()) if d.get("fecha_pago")]
+    upd = {"anticipo": round(min(suma, total), 2)}
+    if fechas:
+        upd["fecha_pago"] = min(fechas)
+    sb.table("pedidos").update(upd).eq("numero_pedido", numero).execute()
+    return "; ".join(cambios)
+
+
 def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=False):
     """Cambia OBSERVACIONES (estado), status y notas de un pedido ya guardado.
     pago = {forma_pago, banco_caja, monto, fecha_pago} (opcional): registra un cobro del saldo.
@@ -837,6 +881,58 @@ def _editar_entrega_facturacion(sb, ped, sel):
             codigos.registrar(sb, quien, "Editó entrega/facturación", "pedido", sel, "; ".join(resumen))
             st.session_state["vp_msg"] = f"Pedido {sel}: datos de entrega y facturación guardados."
             st.rerun()
+
+
+def _editar_pagos_ui(sb, ped, pagos, sel):
+    """Expander del detalle: corregir cómo y dónde se pagó (forma de pago, banco / caja, monto y fecha)."""
+    with st.expander("Pagos: cómo y dónde se pagó"):
+        st.caption("Corrige la forma de pago, el banco / caja, el monto o la fecha de los cobros ya registrados. "
+                   "Lo cobrado y el saldo se recalculan solos. Para un cobro nuevo usa «Registrar el cobro del saldo» "
+                   "en «Cambiar status / observaciones».")
+        formas = list(catalogo(sb, "forma_pago"))
+        bancos = list(catalogo(sb, "banco_caja"))
+        for p in pagos:                          # que un valor viejo que ya no está en el catálogo se pueda ver
+            if p.get("forma_pago") and p["forma_pago"] not in formas:
+                formas.append(p["forma_pago"])
+            if p.get("banco_caja") and p["banco_caja"] not in bancos:
+                bancos.append(p["banco_caja"])
+        base = pd.DataFrame([{"id": p["id"], "forma_pago": p.get("forma_pago"), "banco_caja": p.get("banco_caja"),
+                              "monto": _num(p.get("monto")),
+                              "fecha_pago": _fecha_de(p.get("fecha_pago"))} for p in pagos])
+        ed = st.data_editor(
+            base, hide_index=True, use_container_width=True, num_rows="fixed", key=f"vp_pg_{sel}",
+            column_config={"id": None,
+                           "forma_pago": st.column_config.SelectboxColumn("FORMA DE PAGO", options=formas, required=True),
+                           "banco_caja": st.column_config.SelectboxColumn("BANCO / CAJA", options=bancos),
+                           "monto": st.column_config.NumberColumn("MONTO", min_value=0.0, format="$%.2f"),
+                           "fecha_pago": st.column_config.DateColumn("FECHA DE PAGO", format="DD/MM/YYYY")})
+        q_v, q_c = codigos.pedir_identidad(sb, f"vp_pg_id_{sel}")
+        if st.button("Guardar pagos", type="primary", key=f"vp_pg_ok_{sel}") \
+                and (quien := codigos.confirmar(sb, q_v, q_c)):
+            filas = [{k: (None if (not isinstance(v, (list, dict)) and pd.isna(v)) else v) for k, v in r.items()}
+                     for r in ed.to_dict("records")]
+            try:
+                detalle = editar_pagos(sb, ped, filas, quien)
+            except ValueError as ex:
+                st.error(str(ex))
+                return
+            except Exception as ex:
+                st.error(f"No se pudo guardar: {ex}")
+                return
+            codigos.registrar(sb, quien, "Corrigió pagos", "pedido", sel, detalle)
+            st.session_state["vp_msg"] = f"Pedido {sel}: pagos corregidos."
+            cobrado = round(sum(_num(r.get("monto")) for r in filas), 2)
+            if ped.get("status") in SALDO_CERO and cobrado < round(_num(ped.get("total")), 2) - 0.01:
+                st.session_state["vp_avisos"] = [f"Ahora lo cobrado (${cobrado:,.2f}) es menor que el total, pero el status "
+                                                 f"sigue en «{ped.get('status')}». Revísalo en «Cambiar status / observaciones»."]
+            st.rerun()
+
+
+def _fecha_de(v):
+    try:
+        return dt.date.fromisoformat(str(v)[:10]) if v else None
+    except ValueError:
+        return None
 
 
 def tab_nuevo_pedido(sb, user, desde_cot=False):
@@ -1560,6 +1656,8 @@ def tab_pedidos(sb, user):
 
     if user["role"] in ROLES_EDITAR and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         _editar_entrega_facturacion(sb, ped, sel)
+        if pagos:
+            _editar_pagos_ui(sb, ped, pagos, sel)
 
     if puede_cancelar and items and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         with st.expander("Editar productos del pedido" + (" (modelo, precio, costo)" if ve_costos else " (modelo, precio, descuento)")):
