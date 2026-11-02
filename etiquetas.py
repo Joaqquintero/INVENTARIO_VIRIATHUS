@@ -28,6 +28,7 @@ ROLLOS = {
     "DK-11202 · 62 × 100 mm": (62.0, 100.0),
 }
 LIMITE_ETIQUETAS = 500
+TAM_PRECIO = 10.0      # tamaño del precio en la etiqueta (pt)
 MARGEN_MM = 5.0        # margen que la impresora no imprime, por lado (ajustable en pantalla)
 
 
@@ -109,16 +110,25 @@ def _dibujar_etiqueta(c, W, H, modelo, nombre=None, precio=None, qr_texto="", ma
     cx = rx + rw / 2.0
 
     # Abajo: modelo a la izquierda y precio a la derecha (misma línea)
-    tam_pie = min(7.5, ih * 0.20)
+    # El precio va en negritas a 11 pt; si no cabe junto al modelo, primero se achica el modelo
+    # y solo en etiquetas muy chicas se achica también el precio.
+    tam_mod = min(7.5, ih * 0.20)
     txt_p = f"Precio: ${precio:,.2f}" if precio else ""
-    while tam_pie > 4.5 and (c.stringWidth(modelo, "Helvetica", tam_pie)
-                             + c.stringWidth(txt_p, "Helvetica-Bold", tam_pie) + 2 * mm) > rw:
-        tam_pie -= 0.25
-    c.setFont("Helvetica", tam_pie)
+    tam_pre = min(TAM_PRECIO, ih * 0.32) if txt_p else 0.0     # en rollos chicos, más chico
+
+    def ancho_pie():
+        return (c.stringWidth(modelo, "Helvetica", tam_mod)
+                + (c.stringWidth(txt_p, "Helvetica-Bold", tam_pre) if txt_p else 0) + 2 * mm)
+    while tam_mod > 4.5 and ancho_pie() > rw:
+        tam_mod -= 0.25
+    while txt_p and tam_pre > 4.5 and ancho_pie() > rw:
+        tam_pre -= 0.25
+    c.setFont("Helvetica", tam_mod)
     c.drawString(rx, y0 + 0.2 * mm, modelo)
     if txt_p:
-        c.setFont("Helvetica-Bold", tam_pie)               # el precio, en negritas
+        c.setFont("Helvetica-Bold", tam_pre)               # el precio, en negritas
         c.drawRightString(rx + rw, y0 + 0.2 * mm, txt_p)
+    tam_pie = max(tam_mod, tam_pre)
     y = y0 + tam_pie + 0.9 * mm                         # base del código de barras
 
     # Código de barras: lo más alto que permita dejar lugar para 2 renglones de texto arriba
