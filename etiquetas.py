@@ -70,60 +70,76 @@ def _lineas(c, texto, fuente, tam, ancho, max_lineas):
     return lineas
 
 
+def _texto_que_quepa(c, texto, fuente, tam_max, tam_min, ancho, alto, interlineado=1.15):
+    """El tamaño de letra más grande (entre tam_max y tam_min) con el que `texto` cabe en ancho × alto.
+    Si ni con tam_min cabe, recorta con «…». Devuelve (tamaño, líneas)."""
+    tam = tam_max
+    while True:
+        lineas = simpleSplit(texto, fuente, tam, ancho)
+        if len(lineas) * tam * interlineado <= alto or tam <= tam_min:
+            break
+        tam = round(tam - 0.25, 2)
+    max_lin = max(1, int(alto // (tam * interlineado)))
+    if len(lineas) > max_lin:
+        lineas = _lineas(c, texto, fuente, tam, ancho, max_lin)
+    return tam, lineas
+
+
 def _dibujar_etiqueta(c, W, H, modelo, nombre=None, precio=None, qr_texto="", margen_mm=MARGEN_MM,
-                      barra_mm=0.339, alto_barra_mm=7.0, tam_nombre=6.5):
-    """Etiqueta horizontal de W × H (puntos), origen abajo a la izquierda.
-    Con qr_texto: QR a la izquierda y, a la derecha, información + código de barras + número.
-    Sin qr_texto: lo mismo pero ocupando todo el ancho."""
+                      barra_mm=0.339, alto_barra_mm=7.0, tam_nombre=7.0):
+    """Etiqueta horizontal de W × H (puntos), origen abajo a la izquierda:
+
+        ┌──────────┬───────────────────────────────┐
+        │          │   Nombre del producto, hasta   │
+        │    QR    │   donde quepa (se achica solo) │
+        │          │   ║║│║║│║│║║║│║║│║║│║║│║║│║    │
+        │          │   24189          Precio: $3,490│
+        └──────────┴───────────────────────────────┘
+    Sin QR, la columna de la derecha ocupa todo el ancho."""
     m = margen_mm * mm
     x0, y0 = m, m
     iw, ih = W - 2 * m, H - 2 * m                       # zona imprimible
-    gap = 3 * mm
     if qr_texto:
-        lado = min(ih, iw * 0.4)
+        lado = min(ih, iw * 0.30)
         _dibujar_qr(c, qr_texto, x0, y0 + (ih - lado) / 2.0, lado)
+        gap = max(3 * mm, iw * 0.06)
         rx, rw = x0 + lado + gap, iw - lado - gap       # columna derecha
     else:
         rx, rw = x0, iw
     cx = rx + rw / 2.0
 
-    # Número de modelo (abajo): discreto, ajustado al ancho
-    fuente = "Helvetica-Bold"
-    tam_num = min(8.5, ih * 0.22)
-    while tam_num > 5 and c.stringWidth(modelo, fuente, tam_num) > rw:
-        tam_num -= 0.5
-    c.setFont(fuente, tam_num)
-    c.drawCentredString(cx, y0 + 0.3 * mm, modelo)
-    y = y0 + tam_num * 0.95 + 1.0 * mm
+    # Abajo: modelo a la izquierda y precio a la derecha (misma línea)
+    tam_pie = min(7.5, ih * 0.20)
+    txt_p = f"Precio: ${precio:,.2f}" if precio else ""
+    while tam_pie > 4.5 and (c.stringWidth(modelo, "Helvetica", tam_pie)
+                             + c.stringWidth(txt_p, "Helvetica-Bold", tam_pie) + 2 * mm) > rw:
+        tam_pie -= 0.25
+    c.setFont("Helvetica", tam_pie)
+    c.drawString(rx, y0 + 0.2 * mm, modelo)
+    if txt_p:
+        c.setFont("Helvetica-Bold", tam_pie)               # el precio, en negritas
+        c.drawRightString(rx + rw, y0 + 0.2 * mm, txt_p)
+    y = y0 + tam_pie + 0.9 * mm                         # base del código de barras
 
-    # Precio: se reserva su espacio antes de calcular el alto del código de barras
-    tam_p = tam_num                                   # el precio, del mismo tamaño que el modelo
-    alto_precio = tam_p * 1.15 if precio else 0.0
-    alto_b = min(alto_barra_mm * mm, max(ih - (y - y0) - alto_precio - 1 * mm, 4 * mm))
+    # Código de barras: lo más alto que permita dejar lugar para 2 renglones de texto arriba
+    dos_renglones = 2 * 5.5 * 1.15 + 0.8 * mm if nombre else 0.0
+    alto_b = min(alto_barra_mm * mm, max((y0 + ih) - y - dos_renglones - 0.8 * mm, 5 * mm))
     bw = barra_mm
     while True:
         b = code128.Code128(modelo, barHeight=alto_b, barWidth=bw * mm, quiet=False)
-        if b.width <= rw - 2 * 4 * bw * mm or bw <= 0.2:
+        if b.width <= rw or bw <= 0.2:
             break
-        bw = round(bw - 0.042, 3)
+        bw = round(bw - 0.021, 3)
     b.drawOn(c, cx - b.width / 2.0, y)
-    y += alto_b + 1.0 * mm
+    y += alto_b + 0.8 * mm
 
-    # Arriba: nombre (letra chica, hasta donde quepa) y precio (más grande, en negrita)
-    libre = (y0 + ih) - y
-    tam = tam_nombre
-    paso = tam * 1.15
-    if precio:
-        txt_p = f"${precio:,.0f}"
-        c.setFont("Helvetica-Bold", tam_p)
-        c.drawCentredString(cx, y + 0.3 * mm, txt_p)          # justo encima del código de barras
-        libre_nombre = libre - alto_precio
-    else:
-        libre_nombre = libre
-    n_lin = int(libre_nombre // paso)
-    if nombre and n_lin >= 1:
-        lineas = _lineas(c, nombre, "Helvetica", tam, rw, n_lin)
-        ytxt = (y0 + ih) - tam
+    # Arriba: el texto, centrado, del tamaño más grande con el que entra todo
+    if nombre:
+        alto_txt = (y0 + ih) - y
+        tam, lineas = _texto_que_quepa(c, nombre, "Helvetica", tam_nombre, 4.5, rw, alto_txt)
+        paso = tam * 1.15
+        bloque = len(lineas) * paso
+        ytxt = y + (alto_txt - bloque) / 2.0 + bloque - tam      # centrado en el espacio libre
         c.setFont("Helvetica", tam)
         for t in lineas:
             c.drawCentredString(cx, ytxt, t)
@@ -133,7 +149,7 @@ def _dibujar_etiqueta(c, W, H, modelo, nombre=None, precio=None, qr_texto="", ma
 
 def generar_pdf_etiquetas(modelos, rollo, copias=1, girar_180=False, datos=None, margen_mm=MARGEN_MM,
                           url_base="", barra_mm=0.339, alto_barra_mm=7.0, mostrar_nombre=True, mostrar_precio=False,
-                          qr_modo="modelo", tam_nombre=6.5, urls=None):
+                          qr_modo="modelo", tam_nombre=7.0, urls=None):
     """PDF con una página por etiqueta, del tamaño exacto del rollo (ancho × largo, vertical).
     El diseño es horizontal (se lee con el rollo largo en horizontal) y se gira 90° para el papel.
     datos = {modelo: {"nombre": ..., "precio": ...}}. Devuelve bytes."""
@@ -202,6 +218,28 @@ def urls_de_shopify(modelos, gql=None):
 # ----------------------------------------------------------------------
 # Pantalla (pestaña Herramientas)
 # ----------------------------------------------------------------------
+def medidas_texto(d):
+    """«Medidas: Alto 29 x 20 x 24 cm» desde ALTO, LARGO y ANCHO/PROF de la ficha ("" si no hay)."""
+    vals = []
+    for clave, etq in (("ALTO", "Alto"), ("LARGO", "Largo"), ("ANCHO_PROF", "Prof.")):
+        v = re.sub(r"\s*cm\.?$", "", str(d.get(clave, "") or "").strip(), flags=re.I)
+        if v and v not in ("0", "0.0"):
+            vals.append((etq, v))
+    if not vals:
+        return ""
+    if len(vals) == 3:
+        return f"Medidas: Alto {vals[0][1]} x {vals[1][1]} x {vals[2][1]} cm"
+    return "Medidas: " + " x ".join(f"{e} {v}" for e, v in vals) + " cm"
+
+
+def texto_etiqueta(nombre, medidas, con_medidas=True):
+    """Nombre + medidas (las medidas no se agregan si el nombre ya las trae)."""
+    nombre = " ".join(str(nombre or "").split())
+    if con_medidas and medidas and "medida" not in nombre.lower():
+        return f"{nombre} {medidas}".strip()
+    return nombre
+
+
 def _datos_de(fila):
     try:
         d = fila.get("datos_json")
@@ -212,7 +250,7 @@ def _datos_de(fila):
         precio = float(re.sub(r"[^\d.\-]", "", str(d.get("REDONDEO_SHOWROOM", "") or "")) or 0)
     except ValueError:
         precio = 0.0
-    return {"nombre": str(d.get("NOMBRE", "") or "").strip(), "precio": precio}
+    return {"nombre": str(d.get("NOMBRE", "") or "").strip(), "precio": precio, "medidas": medidas_texto(d)}
 
 
 def _buscar_en_inventario(sb, candidatos):
@@ -249,7 +287,7 @@ def render_etiquetas(sb):
                 candidatos = [str(n) for n in range(int(d), int(h) + 1)]
     else:
         txt = st.text_area("Modelos (separados por coma, espacio o salto de línea)", key="et_lista", height=90)
-        candidatos = [t for t in re.split(r"[,\\s;]+", txt.strip()) if t]
+        candidatos = [t for t in re.split(r"[,\s;]+", txt.strip()) if t]
 
     url_base = st.text_input(
         "Dirección del QR (déjala vacía para etiquetas sin QR)",
@@ -278,13 +316,20 @@ def render_etiquetas(sb):
                             key="et_barra", help="Más fino = código más corto. Por debajo de 0.254 mm los lectores empiezan a fallar.")
     alto = p2.number_input("Alto del código (mm)", min_value=4.0, max_value=20.0, value=7.0, step=0.5, key="et_alto",
                            help="Los lectores leen bien desde unos 6 mm de alto.")
-    tam_nombre = p3.number_input("Tamaño del nombre (pt)", min_value=5.0, max_value=12.0, value=6.5, step=0.5, key="et_tam_nombre",
-                                 help="Más grande = menos palabras caben. Si el nombre no cabe, se corta con «…».")
-    con_nombre = p4.checkbox("Incluir el nombre", value=True, key="et_nombre")
-    con_precio = p5.checkbox("Incluir el precio", value=False, key="et_precio",
+    tam_nombre = p3.number_input("Tamaño máximo del texto (pt)", min_value=5.0, max_value=12.0, value=7.0, step=0.5,
+                                 key="et_tam_nombre",
+                                 help="El texto empieza con este tamaño y se achica solo hasta que entra todo "
+                                      "(mínimo 4.5 pt; si ni así entra, se corta con «…»).")
+    con_nombre = p4.checkbox("Incluir el texto", value=True, key="et_nombre",
+                             help="Nombre del producto (y las medidas, si las agregas).")
+    con_precio = p5.checkbox("Incluir el precio", value=True, key="et_precio",
                              help="Ojo: el precio impreso no se actualiza si luego lo cambias en el inventario.")
+    con_medidas = st.checkbox("Agregar las medidas de la ficha al texto (Alto × Largo × Prof.)", value=True,
+                              key="et_medidas", help="No se agregan si el nombre ya trae las medidas.")
+    ss = st.session_state
 
-    if st.button("Generar PDF de etiquetas", type="primary", key="et_generar", disabled=not candidatos):
+    # Paso 1: buscar los modelos y armar la tabla para revisar
+    if st.button("1 · Preparar etiquetas", type="primary", key="et_preparar", disabled=not candidatos):
         candidatos = list(dict.fromkeys(candidatos))          # sin repetidos, en orden
         invalidos = [m for m in candidatos if not modelo_valido(m)]
         validos = [m for m in candidatos if modelo_valido(m)]
@@ -295,36 +340,70 @@ def render_etiquetas(sb):
             return
         modelos = [m for m in validos if m in hallados]
         faltan = [m for m in validos if m not in hallados]
+        avisos = []
+        if invalidos:
+            avisos.append("Estos modelos tienen caracteres que el código de barras no admite (acentos, ñ…), se omitieron: "
+                          + ", ".join(invalidos[:20]))
+        if faltan:
+            avisos.append(f"{len(faltan)} modelo(s) no existen en el inventario y se omitieron: "
+                          + ", ".join(faltan[:30]) + ("…" if len(faltan) > 30 else ""))
+        if not modelos:
+            avisos.append("Ninguno de esos modelos existe en el inventario.")
+        ss["et_filas"] = [{"modelo": m, "texto": texto_etiqueta(hallados[m]["nombre"], hallados[m]["medidas"], con_medidas),
+                           "precio": float(hallados[m]["precio"] or 0)} for m in modelos]
+        ss["et_avisos"] = avisos
+        ss["et_ver"] = ss.get("et_ver", 0) + 1
+        ss.pop("et_pdf", None)
+
+    for a in ss.get("et_avisos", []):
+        st.info(a)
+    filas = ss.get("et_filas") or []
+    if not filas:
+        return
+
+    # Paso 2: revisar / corregir (solo para la etiqueta; el inventario no cambia)
+    import pandas as pd
+    st.markdown(f"**2 · Revisa las {len(filas)} etiqueta(s)** — puedes corregir el texto y el precio; "
+                "el inventario no cambia.")
+    editado = st.data_editor(
+        pd.DataFrame(filas), hide_index=True, use_container_width=True, num_rows="fixed",
+        key=f"et_tabla_{ss.get('et_ver', 0)}", disabled=["modelo"],
+        column_config={"modelo": st.column_config.TextColumn("MODELO", width="small"),
+                       "texto": st.column_config.TextColumn("TEXTO DE LA ETIQUETA", width="large"),
+                       "precio": st.column_config.NumberColumn("PRECIO", min_value=0.0, format="$%.2f",
+                                                               width="small")})
+    sin_precio = [r["modelo"] for r in editado.to_dict("records") if con_precio and not (r.get("precio") or 0)]
+    if sin_precio:
+        st.caption("Sin precio (la etiqueta sale sin «Precio»): " + ", ".join(sin_precio[:20]))
+
+    # Paso 3: generar el PDF con lo que quedó en la tabla
+    if st.button("3 · Generar PDF de etiquetas", type="primary", key="et_generar"):
+        registros = editado.to_dict("records")
+        modelos = [r["modelo"] for r in registros]
         if len(modelos) * int(copias) > LIMITE_ETIQUETAS:
             st.error(f"Son demasiadas etiquetas ({len(modelos) * int(copias)}). El máximo por PDF es {LIMITE_ETIQUETAS}.")
             return
-        if not modelos:
-            st.warning("Ninguno de esos modelos existe en el inventario.")
-        else:
-            urls, sin_enlace = {}, []
-            if url_base and qr_modo == "shopify":
-                try:
-                    with st.spinner("Buscando los enlaces en Shopify…"):
-                        urls = urls_de_shopify(modelos)
-                    sin_enlace = [m for m in modelos if m not in urls]
-                except Exception as ex:
-                    st.warning(f"No se pudieron leer los enlaces de Shopify ({ex}). Los QR llevarán a la página principal.")
-                    sin_enlace = list(modelos)
-            pdf = generar_pdf_etiquetas(modelos, rollo, copias, girar, hallados, margen, url_base, barra, alto,
-                                        con_nombre, con_precio, qr_modo, tam_nombre, urls)
-            if sin_enlace:
-                vista = ", ".join(sin_enlace[:30]) + ("…" if len(sin_enlace) > 30 else "")
-                st.info(f"{len(sin_enlace)} modelo(s) no están publicados en la tienda; su QR lleva a la página principal: {vista}")
-            st.session_state["et_pdf"] = (pdf, len(modelos) * int(copias))
-        if invalidos:
-            st.warning("Estos modelos tienen caracteres que el código de barras no admite (acentos, ñ…), se omitieron: "
-                       + ", ".join(invalidos[:20]))
-        if faltan:
-            vista = ", ".join(faltan[:30]) + ("…" if len(faltan) > 30 else "")
-            st.info(f"{len(faltan)} modelo(s) no existen en el inventario y se omitieron: {vista}")
+        datos = {r["modelo"]: {"nombre": str(r.get("texto") or "").strip(),
+                               "precio": float(r.get("precio") or 0) if not pd.isna(r.get("precio")) else 0.0}
+                 for r in registros}
+        urls, sin_enlace = {}, []
+        if url_base and qr_modo == "shopify":
+            try:
+                with st.spinner("Buscando los enlaces en Shopify…"):
+                    urls = urls_de_shopify(modelos)
+                sin_enlace = [m for m in modelos if m not in urls]
+            except Exception as ex:
+                st.warning(f"No se pudieron leer los enlaces de Shopify ({ex}). Los QR llevarán a la página principal.")
+                sin_enlace = list(modelos)
+        pdf = generar_pdf_etiquetas(modelos, rollo, copias, girar, datos, margen, url_base, barra, alto,
+                                    con_nombre, con_precio, qr_modo, tam_nombre, urls)
+        if sin_enlace:
+            vista = ", ".join(sin_enlace[:30]) + ("…" if len(sin_enlace) > 30 else "")
+            st.info(f"{len(sin_enlace)} modelo(s) no están publicados en la tienda; su QR lleva a la página principal: {vista}")
+        ss["et_pdf"] = (pdf, len(modelos) * int(copias))
 
-    if st.session_state.get("et_pdf"):
-        pdf, n = st.session_state["et_pdf"]
+    if ss.get("et_pdf"):
+        pdf, n = ss["et_pdf"]
         st.success(f"Listo: {n} etiqueta(s).")
         descargar(st, "Descargar PDF de etiquetas", pdf, file_name="etiquetas.pdf", mime="application/pdf", key="et_desc")
         st.caption("Al imprimir, elige la Brother QL-800, el papel que coincide con tu rollo (p. ej. 29 mm × 90 mm), "

@@ -665,6 +665,16 @@ document.getElementById("w{clave}").onclick = async () => {{
 COPIAS_IMPRESION = ["ORIGINAL", "COPIA CLIENTE"]
 
 
+def formas_pago(pagos):
+    """Formas de pago distintas del pedido, en el orden en que se registraron (para el PDF: solo el método)."""
+    vistas = []
+    for p in sorted(pagos or [], key=lambda x: x.get("id") or 0):
+        f = str(p.get("forma_pago") or "").strip()
+        if f and _num(p.get("monto")) > 0 and f not in vistas:
+            vistas.append(f)
+    return vistas
+
+
 def _generar_pdf(ped, items, vendedores, doble=False):
     """Genera el PDF con pedido_pdf.py (requiere: pip install reportlab)."""
     from pedido_pdf import generar_pdf_pedido
@@ -676,6 +686,11 @@ def pdf_de_pedido(sb, numero, doble=False):
     ped = sb.table("pedidos").select("*").eq("numero_pedido", numero).execute().data[0]
     items = sb.table("pedido_items").select("*").eq("numero_pedido", numero).order("id").execute().data
     vends = sb.table("pedido_vendedores").select("vendedor").eq("numero_pedido", numero).execute().data
+    try:
+        pagos = sb.table("pedido_pagos").select("forma_pago,monto,id").eq("numero_pedido", numero).execute().data
+        ped = dict(ped, _formas_pago=formas_pago(pagos))
+    except Exception:
+        pass
     return _generar_pdf(ped, items, [v["vendedor"] for v in vends], doble)
 
 
@@ -1549,6 +1564,8 @@ def tab_pedidos(sb, user):
             ped = dict(ped, _firma=fz)
     except Exception as ex:
         st.caption(f"Firma no disponible: {ex}")
+
+    ped = dict(ped, _formas_pago=formas_pago(pagos))      # en el PDF sale solo el método de pago
 
     # El PDF se arma solo cuando se pide (antes se armaban 2 en cada clic: ~15 MB y tiempo). Se guarda uno a la vez
     # y se descarta si el pedido cambió.

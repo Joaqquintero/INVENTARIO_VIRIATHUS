@@ -491,10 +491,18 @@ def _story_pedido(pedido, items, vendedores, vacias=None):
                                    ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 0)]))
 
     # ---- Observaciones y firma ----
-    texto_obs = " · ".join(x for x in [pedido.get("estado_pedido"), pedido.get("observaciones")] if x)
-    obs = Table([[_p("OBSERVACIONES", ST_OBS_T)],
-                 [Paragraph(escape(texto_obs), ST_OBS)], [""], [""]], colWidths=[330], rowHeights=[12, None, 18, 18])
-    obs.setStyle(TableStyle([("LINEBELOW", (0, 1), (0, 3), 0.6, NEGRO), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
+    # Al final de las observaciones: solo el método de pago (sin montos, banco ni fechas)
+    formas = [f for f in (pedido.get("_formas_pago") or []) if f]
+    metodo = ("Método de pago: " + (formas[0] if len(formas) == 1 else ", ".join(formas[:-1]) + " y " + formas[-1])) \
+        if formas else ""
+    texto_obs = " · ".join(x for x in [pedido.get("estado_pedido"), pedido.get("observaciones"), metodo] if x)
+    # Un renglón por línea, como en un cuaderno: el texto sigue en las líneas de abajo (mínimo 3 líneas)
+    from reportlab.lib.utils import simpleSplit
+    lineas = simpleSplit(texto_obs, ST_OBS.fontName, ST_OBS.fontSize, 330) if texto_obs else []
+    lineas += [""] * max(0, 3 - len(lineas))
+    obs = Table([[_p("OBSERVACIONES", ST_OBS_T)]] + [[Paragraph(escape(l), ST_OBS)] for l in lineas],
+                colWidths=[330], rowHeights=[12] + [18] * len(lineas))
+    obs.setStyle(TableStyle([("LINEBELOW", (0, 1), (0, -1), 0.6, NEGRO), ("VALIGN", (0, 0), (-1, -1), "BOTTOM"),
                              ("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0),
                              ("TOPPADDING", (0, 0), (-1, -1), 0), ("BOTTOMPADDING", (0, 0), (-1, -1), 1)]))
     celda = ""
