@@ -8,8 +8,6 @@ if _bita_prev is not None and _bita_ini is not None:
     _bita.anotar("Entre clics (Streamlit, fuera del código)", _bita_prev, _bita_ini)
 from supabase import create_client
 import json
-import subprocess
-import sys
 import os
 import re
 import math
@@ -243,20 +241,6 @@ def obtener_siguiente_modelo():
    except Exception:
        return ""
    return str(maximo + 1) if maximo else "1"
-
-
-def ejecutar_script_python(nombre_script):
-   try:
-       resultado = subprocess.run([sys.executable, nombre_script], capture_output=True, text=True)
-       if resultado.returncode == 0:
-           st.success(f"Se ejecutó '{nombre_script}' con éxito.")
-           if resultado.stdout:
-               st.code(resultado.stdout)
-       else:
-           st.error(f"Error al ejecutar '{nombre_script}':")
-           st.code(resultado.stderr)
-   except Exception as e:
-       st.error(f"Error al intentar llamar a {nombre_script}: {e}")
 
 
 # --- FORMULARIO PRINCIPAL ESTRUCTURADO ---
@@ -1227,27 +1211,6 @@ if tab2 is not None:
 if tab3 is not None:
    with tab3:
       if puede(user, "herramientas"):
-          st.header("Ejecución de Scripts y Carga Automática")
-          col_s1, col_s2, col_s3 = st.columns(3)
-          with col_s1:
-              with st.container(border=True):
-                  st.subheader("Cargar Excel")
-                  if st.button("Ejecutar cargar_excel.py", use_container_width=True, type="primary"):
-                      with st.spinner("Procesando Excel..."):
-                          ejecutar_script_python("cargar_excel.py")
-          with col_s2:
-              with st.container(border=True):
-                  st.subheader("Extraer Imágenes")
-                  if st.button("Ejecutar extraer_imagenes.py", use_container_width=True):
-                      with st.spinner("Procesando fotos..."):
-                          ejecutar_script_python("extraer_imagenes.py")
-          with col_s3:
-              with st.container(border=True):
-                  st.subheader("Actualizar Stock")
-                  if st.button("Ejecutar actualizar_stock.py", use_container_width=True):
-                      with st.spinner("Sincronizando stock..."):
-                          ejecutar_script_python("actualizar_stock.py")
-          st.divider()
           with st.container(border=True):
               render_traer_descripciones(supabase)
           st.divider()

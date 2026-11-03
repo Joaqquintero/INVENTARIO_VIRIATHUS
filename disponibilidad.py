@@ -1,7 +1,7 @@
 """
 Diferencias de disponibilidad entre el inventario y Shopify (con aviso, nada se cambia solo).
 
-  * Cada 10 minutos, en segundo plano, compara el stock de Shopify con la disponibilidad del inventario.
+  * Cada 30 minutos, en segundo plano, compara el stock de Shopify con la disponibilidad del inventario.
   * Dos casos:
       - «Shopify agotado»:  Shopify en 0 y el inventario dice DISPONIBLE  (¿se vendió? ¿se apagó a mano?)
       - «Shopify a la venta»: Shopify en 1 o más y el inventario dice VENDIDO o RESERVADO  (riesgo de doble venta)
@@ -68,7 +68,7 @@ _TAREA = TareaPeriodica(calcular_diferencias, INTERVALO_SEG)
 
 
 def diferencias_en_segundo_plano(sb):
-    """Último resultado al instante; cada 10 min lanza otra revisión sin hacer esperar la página."""
+    """Último resultado al instante; cada 30 min lanza otra revisión sin hacer esperar la página."""
     return _TAREA.obtener(sb)
 
 

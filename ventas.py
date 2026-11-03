@@ -404,7 +404,7 @@ def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=
     if cancela:
         estado = status = "Cancelado"
     if cancela != estaba and not puede_cancelar:
-        raise ValueError("Solo Administrador o Inventario pueden cancelar o reactivar un pedido.")
+        raise ValueError("Tu rol no puede cancelar ni reactivar pedidos.")
     if cancela and pago:
         raise ValueError("Un pedido cancelado no puede registrar pagos.")
 
@@ -1614,7 +1614,7 @@ def tab_pedidos(sb, user):
         ya_cancelado = ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado"
         with st.expander("Cambiar status / observaciones"):
             if ya_cancelado and not puede_cancelar:
-                st.caption("Solo Administrador o Inventario pueden modificar un pedido cancelado.")
+                st.caption("Tu rol no puede modificar un pedido cancelado.")
             else:
                 def _opciones(tipo, actual):
                     ops = list(catalogo(sb, tipo))

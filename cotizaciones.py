@@ -155,7 +155,14 @@ def _liberar_items(sb, items):
         if not it.get("apartado") or not it.get("modelo"):
             continue
         try:
-            a = reservas.liberar(sb, it["modelo"], int(_num(it.get("reservado"))))
+            descontadas = int(_num(it.get("reservado")))
+            otra = None if descontadas else cotizacion_que_aparta(sb, it["modelo"], excluir_cot=it.get("cotizacion_id"))
+            if otra:
+                # Pieza única que OTRA cotización vigente también tiene apartada (pasa si dos la apartaron a la vez):
+                # sigue reservada para aquella; aquí solo se suelta.
+                sb.table("cotizacion_items").update({"apartado": False, "reservado": 0}).eq("id", it["id"]).execute()
+                continue
+            a = reservas.liberar(sb, it["modelo"], descontadas)
             if a:
                 avisos.append(a)
             sb.table("cotizacion_items").update({"apartado": False, "reservado": 0}).eq("id", it["id"]).execute()

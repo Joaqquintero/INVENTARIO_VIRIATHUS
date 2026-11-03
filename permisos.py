@@ -28,7 +28,7 @@ PERMISOS = {
     "cancelar_pedidos":  (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),
     "editar_pedidos":    (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),  # status / observaciones / facturación y efectivo
     "cotizar":           (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),
-    "remisiones":        (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),  # pestaña «Remisiones» (solo PDF, no guarda nada)
+    "remisiones":        (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),  # pestaña «Remisiones» (de pedido y abiertas; el PDF se arma al momento y no se guarda)
     "por_facturar":      (DIOS, ADMIN, CONTA, FACT),           # pestaña «Por facturar»
     "costos_rapidos":    (DIOS, ADMIN, CONTA, FACT),           # «⚡ Capturar costos pendientes»
     "resumen_mensual":   (DIOS, ADMIN, CONTA, FACT),
