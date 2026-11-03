@@ -5,7 +5,8 @@ Dos tipos, en una sola lista:
 
   * DE PEDIDO: se genera desde el detalle del pedido («Generar remisión»). Toma cliente y productos del pedido;
     cada objeto tiene foto, nombre, descripción, observaciones, estado (Pendiente, En restauro, Listo para
-    entregar, Entregado, Devuelto) y fecha de entrega. Cuando todo está entregado, el pedido pasa solo a
+    entregar, Enviado, Entregado, Devuelto) y fecha de entrega. «Enviado» = ya salió pero el cliente aún no lo
+    recibe: no cuenta como entregado. Cuando todo está entregado, el pedido pasa solo a
     «Pagado y entregado» (o «Entregado pendiente de pago» si tiene saldo). Si cambian los productos del pedido,
     la remisión agrega los nuevos y avisa de los que se quitaron. El PDF no lleva precios.
 
@@ -36,8 +37,8 @@ from navegacion import descargar
 ROLES_REMISIONES = _roles("remisiones")
 MAX_DESC = 700
 
-ESTADOS_PEDIDO = ("Pendiente", "En restauro", "Listo para entregar", "Entregado", "Devuelto")
-ENTREGADO, DEVUELTO = "Entregado", "Devuelto"
+ESTADOS_PEDIDO = ("Pendiente", "En restauro", "Listo para entregar", "Enviado", "Entregado", "Devuelto")
+ENVIADO, ENTREGADO, DEVUELTO = "Enviado", "Entregado", "Devuelto"   # «Enviado» todavía no cuenta como entregado
 APARTADO = "Apartado"
 LLEVO_PEND = "Se lo llevó · pendiente de pago"
 LLEVO_PAG = "Se lo llevó · pagado"
@@ -782,7 +783,8 @@ def _lista(sb, user):
         if r["tipo"] == "pedido":
             ent = sum(1 for i in it if i.get("estado") in (ENTREGADO, DEVUELTO))
             pendiente = ent < len(it) or not it
-            avance = f"{ent} de {len(it)} entregados"
+            env = sum(1 for i in it if i.get("estado") == ENVIADO)
+            avance = f"{ent} de {len(it)} entregados" + (f" · {env} enviado(s)" if env else "")
         else:
             res = resumen_abierta(it, [])
             pendiente = r.get("estado") == "Abierta"
