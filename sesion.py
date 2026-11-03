@@ -71,12 +71,33 @@ try {{ document.cookie = v; }} catch (e) {{}}
 </script>"""
 
 
+VECES_RECORDAR = 3          # recargas seguidas en que se deja la llave (por si una recarga rápida se «come» una)
+
+
+def _cookie_vigente(usuario, password):
+    """True si el navegador ya mandó una llave válida de este usuario (cookie)."""
+    try:
+        llave = st.context.cookies.get(COOKIE)
+    except Exception:
+        return False
+    return bool(llave) and usuario_de_llave(llave, {usuario: {"password": password}}) == usuario
+
+
 def recordar(usuario, password):
-    """Deja la llave en el navegador. Se llama en CADA recarga mientras la sesión está abierta (la llave se arma
-    una sola vez por sesión, así el componente no cambia): si una recarga rápida se lo «come», la siguiente la deja."""
+    """Deja la llave en el navegador. Se llama en cada recarga mientras la sesión está abierta, pero solo trabaja
+    las primeras VECES_RECORDAR recargas de la sesión, y nada si el navegador ya trae la cookie válida.
+    Antes el componente se dibujaba en TODAS las recargas: si el servidor tardaba en entregarlo, Streamlit
+    mostraba el aviso «Your app is having trouble loading the sesion.sesion_almacen component»."""
     ss = st.session_state
     if ss.get("_llave_de") != usuario:
         ss["_llave"], ss["_llave_de"] = crear_llave(usuario, password), usuario
+        ss["_llave_veces"] = 0
+    if ss.get("_llave_veces", 0) >= VECES_RECORDAR:
+        return
+    if _cookie_vigente(usuario, password):
+        ss["_llave_veces"] = VECES_RECORDAR                # ya quedó guardada: no hace falta nada más
+        return
+    ss["_llave_veces"] = ss.get("_llave_veces", 0) + 1
     _almacen(accion="guardar", llave=ss["_llave"], key="ses_guardar", default=None)
     components.html(_cookie_js(ss["_llave"], DURACION), height=0)
 
