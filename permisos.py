@@ -35,7 +35,7 @@ PERMISOS = {
     "comisiones":        (DIOS, ADMIN, CONTA, FACT),
     "caudal":            (DIOS, ADMIN, CONTA, FACT),           # pestaña «Caudal» (ver, registrar y anular)
     "codigos":           (DIOS,),                              # pestaña «Códigos» de vendedores
-    "avisos_precio":     (DIOS, ADMIN),                        # aviso de cambios de precio autorizados
+    "avisos_precio":     (DIOS, ADMIN, CONTA),                 # aviso de cambios de precio autorizados
 }
 
 
