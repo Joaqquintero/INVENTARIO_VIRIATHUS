@@ -457,16 +457,18 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            st.session_state[clave] = max(1, n_inicial)
        return st.session_state[clave]
 
+   def _sumar_bloques(clave, n):
+       st.session_state[clave] = max(1, st.session_state.get(clave, 1) + n)
+
    def _botones_bloques(clave, etiqueta):
+       # Sin st.rerun(): eso recargaba toda la página, cerraba la ventana de «Editar ficha» y se perdía lo
+       # capturado. Con on_click el botón solo vuelve a dibujar el formulario, ya con el bloque nuevo.
        b1, b2, _ = st.columns([2, 2, 4])
-       if b1.button(f"Añadir otra {etiqueta}" if etiqueta == "compra" else f"Añadir otro {etiqueta}",
-                    key=f"{prefix}_btn_add_{etiqueta}"):
-           st.session_state[clave] += 1
-           st.rerun()
-       if st.session_state[clave] > 1 and b2.button(f"Quitar la última" if etiqueta == "compra" else "Quitar el último",
-                                                     key=f"{prefix}_btn_del_{etiqueta}"):
-           st.session_state[clave] -= 1
-           st.rerun()
+       b1.button(f"Añadir otra {etiqueta}" if etiqueta == "compra" else f"Añadir otro {etiqueta}",
+                 key=f"{prefix}_btn_add_{etiqueta}", on_click=_sumar_bloques, args=(clave, 1))
+       if st.session_state[clave] > 1:
+           b2.button(f"Quitar la última" if etiqueta == "compra" else "Quitar el último",
+                     key=f"{prefix}_btn_del_{etiqueta}", on_click=_sumar_bloques, args=(clave, -1))
 
    # ---------- Datos de Compra (puede haber varias; cada una con su costo) ----------
    st.subheader("Datos de Compra")
