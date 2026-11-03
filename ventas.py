@@ -16,25 +16,18 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from corte import pedido_desde
-
 import codigos
-import precios
-from caches import guardar_en_memoria
-from permisos import roles
-from navegacion import descargar
 
 IVA_FACTOR = 1.16
 MESES = ["Enero", "Febrero", "Marzo", "Abril", "Mayo", "Junio", "Julio",
          "Agosto", "Septiembre", "Octubre", "Noviembre", "Diciembre"]
 
 # Quién puede ver costos/utilidad, cancelar pedidos y ver comisiones
-# (se definen en permisos.py)
-ROLES_COSTOS = roles("ver_costos")
-ROLES_CANCELAR = roles("cancelar_pedidos")
-ROLES_EDITAR = roles("editar_pedidos")      # quién puede cambiar status / observaciones
-ROLES_COMISIONES = roles("comisiones")
-ROLES_RESUMEN = roles("resumen_mensual")
+ROLES_COSTOS = ("Administrador", "Inventario")
+ROLES_CANCELAR = ("Administrador", "Inventario", "Vendedor")
+ROLES_EDITAR = ("Administrador", "Inventario", "Vendedor")   # quién puede cambiar status / observaciones
+ROLES_COMISIONES = ("Administrador",)
+ROLES_RESUMEN = ("Administrador",)          # resumen mensual: solo el administrador
 
 
 # ----------------------------------------------------------------------
@@ -101,8 +94,8 @@ def _clientes_registrados(_sb):
     """Clientes distintos de la tabla pedidos: {nombre normalizado: {nombre, pedidos, ultima}}."""
     clientes, desde = {}, 0
     while True:
-        filas = (_sb.table("pedidos").select("cliente,fecha").gte("numero_pedido", pedido_desde())
-                 .order("fecha", desc=True).range(desde, desde + 999).execute().data)
+        filas = (_sb.table("pedidos").select("cliente,fecha").order("fecha", desc=True)
+                 .range(desde, desde + 999).execute().data)
         for r in filas:
             nombre = (r.get("cliente") or "").strip()
             nn = _norm(nombre)
@@ -166,11 +159,9 @@ def anticipo_efectivo(anticipo, pagos, total):
     return round(min(max(anticipo or 0.0, cobrado), total), 2)
 
 
-def calcular(items, descuento_pct, con_iva, anticipo, status=None, envio=0.0):
+def calcular(items, descuento_pct, con_iva, anticipo, status=None):
     """Cada renglón puede traer su propio "descuento_pct"; `descuento_pct` (general) se mantiene
-    solo para pedidos antiguos y se combina con el del renglón.
-    `envio` (con IVA incluido, como los precios) se suma al total que paga el cliente, pero el subtotal,
-    el IVA, la utilidad y la comisión salen solo de los productos."""
+    solo para pedidos antiguos y se combina con el del renglón."""
     fg = 1.0 - (descuento_pct or 0.0) / 100.0
     lineas, bruto = [], 0.0
     for it in items:
@@ -180,19 +171,16 @@ def calcular(items, descuento_pct, con_iva, anticipo, status=None, envio=0.0):
         factor = (1.0 - di / 100.0) * fg
         # Con descuento se redondea por renglón (como en el pedido en papel)
         lineas.append(redondear_peso(b * factor) if (di or descuento_pct) else round(b, 2))
-    envio = round(max(_num(envio), 0.0), 2)
-    total_prod = round(sum(lineas), 2)
-    total = round(total_prod + envio, 2)
+    total = round(sum(lineas), 2)
     costo = round(sum(it["costo_unitario"] * it["cantidad"] for it in items), 2)
     util_inv = round(sum(it.get("utilidad_bruta_inv", 0.0) * it["cantidad"] for it in items), 2)
     if con_iva:
-        subtotal = round(total_prod / IVA_FACTOR, 2)
-        iva = round(total_prod - subtotal, 2)
+        subtotal = round(total / IVA_FACTOR, 2)
+        iva = round(total - subtotal, 2)
     else:
-        subtotal, iva = total_prod, 0.0
+        subtotal, iva = total, 0.0
     return {
         "lineas": lineas, "bruto": round(bruto, 2), "total": total, "subtotal": subtotal,
-        "total_productos": total_prod, "envio": envio,
         "iva": iva, "costo": costo, "utilidad": round(subtotal - costo, 2),
         "comision": round(subtotal * 0.02, 2),
         "saldo": 0.0 if status in SALDO_CERO else round(total - (anticipo or 0.0), 2),
@@ -222,39 +210,6 @@ def buscar_modelo(sb, modelo):
         "vendido": vendido,
         "stock": _num(d.get("CANTIDAD"), 1.0),
     }
-
-
-def reservado_por(sb, modelo):
-    """Nombre del vendedor de la cotización vigente que tiene apartado el modelo ("" si no se encuentra)."""
-    try:
-        its = (sb.table("cotizacion_items").select("cotizacion_id")
-               .eq("modelo", str(modelo)).eq("apartado", True).execute().data or [])
-        ids = list({i["cotizacion_id"] for i in its})
-        if not ids:
-            return ""
-        cots = (sb.table("cotizaciones").select("vendedor").in_("id", ids)
-                .eq("estado", "Vigente").limit(1).execute().data or [])
-        return str(cots[0].get("vendedor") or "").split("/")[0].strip() if cots else ""
-    except Exception:
-        return ""
-
-
-def etiqueta_reserva(sb, modelo):
-    """«en la remisión abierta de JUAN» / «por una cotización de MARINA» / «por una cotización»."""
-    try:
-        from remisiones import reservado_en_remision
-        cliente = reservado_en_remision(sb, modelo)
-    except Exception:
-        cliente = ""
-    if cliente:
-        return f"en la remisión abierta de {cliente}"
-    quien = reservado_por(sb, modelo)
-    return "por una cotización" + (f" de {quien}" if quien else "")
-
-
-def texto_reservado(sb, modelo):
-    """«El modelo X ya está reservado por una cotización de NOMBRE» (o «en la remisión abierta de CLIENTE»)."""
-    return f"El modelo {modelo} ya está reservado {etiqueta_reserva(sb, modelo)}"
 
 
 def _sync_shopify_disponibilidad(modelo, vendido):
@@ -348,50 +303,6 @@ def reactivar_modelos(sb, numero):
     return avisos
 
 
-def editar_pagos(sb, ped, filas, usuario=""):
-    """Corrige los cobros ya registrados de un pedido: forma de pago, banco / caja, monto y fecha.
-    filas = [{"id", "forma_pago", "banco_caja", "monto", "fecha_pago"}]. Recalcula lo cobrado (anticipo).
-    Devuelve el texto de lo que cambió. Lanza ValueError si algo no es válido."""
-    numero = ped["numero_pedido"]
-    actuales = {p["id"]: p for p in (sb.table("pedido_pagos").select("*").eq("numero_pedido", numero)
-                                     .execute().data or [])}
-    total = round(_num(ped.get("total")), 2)
-    cambios, nuevos = [], {}
-    for f in filas:
-        p = actuales.get(f.get("id"))
-        if not p:
-            continue
-        forma = _nn(str(f.get("forma_pago") or ""))
-        if not forma:
-            raise ValueError("Cada cobro necesita su forma de pago.")
-        monto = round(_num(f.get("monto")), 2)
-        if monto <= 0:
-            raise ValueError("Cada cobro necesita un monto mayor que 0.")
-        fecha = f.get("fecha_pago")
-        fecha = fecha.isoformat() if hasattr(fecha, "isoformat") else (_nn(str(fecha or "")) or None)
-        datos = {"forma_pago": forma, "banco_caja": _nn(str(f.get("banco_caja") or "")), "monto": monto,
-                 "fecha_pago": fecha[:10] if fecha else None}
-        antes = {"forma_pago": p.get("forma_pago") or None, "banco_caja": p.get("banco_caja") or None,
-                 "monto": round(_num(p.get("monto")), 2), "fecha_pago": str(p.get("fecha_pago"))[:10] if p.get("fecha_pago") else None}
-        if antes != datos:
-            nuevos[p["id"]] = datos
-            cambios.append(f"{p.get('forma_pago')} · {p.get('banco_caja') or '—'} · ${_num(p.get('monto')):,.2f} → "
-                           f"{forma} · {datos['banco_caja'] or '—'} · ${monto:,.2f}")
-    if not nuevos:
-        raise ValueError("No hay cambios que guardar.")
-    suma = round(sum(nuevos.get(i, {}).get("monto", _num(p.get("monto"))) for i, p in actuales.items()), 2)
-    if suma > total + 0.01:
-        raise ValueError(f"Los cobros sumarían ${suma:,.2f} y el total del pedido es ${total:,.2f}.")
-    for i, datos in nuevos.items():
-        sb.table("pedido_pagos").update(datos).eq("id", i).execute()
-    fechas = [d.get("fecha_pago") for d in (nuevos.get(i, p) for i, p in actuales.items()) if d.get("fecha_pago")]
-    upd = {"anticipo": round(min(suma, total), 2)}
-    if fechas:
-        upd["fecha_pago"] = min(fechas)
-    sb.table("pedidos").update(upd).eq("numero_pedido", numero).execute()
-    return "; ".join(cambios)
-
-
 def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=False):
     """Cambia OBSERVACIONES (estado), status y notas de un pedido ya guardado.
     pago = {forma_pago, banco_caja, monto, fecha_pago} (opcional): registra un cobro del saldo.
@@ -449,15 +360,12 @@ def actualizar_pedido(sb, ped, estado, status, notas, pago=None, puede_cancelar=
     return f"Pedido {numero} actualizado.", avisos
 
 
-def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario="", envio=None,
-                        permitir_precio=False, autorizo=None):
+def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=False, usuario=""):
     """Reemplaza los renglones de un pedido ya guardado (modelo, descripción, cantidad, precio, costo) y
     recalcula subtotal / IVA / total / costo. Ajusta el inventario: los modelos que salen vuelven a
     disponible y los que entran se marcan vendidos.
     filas = [{"modelo","descripcion","cantidad","precio_unitario","costo_unitario","descuento_pct","orig": renglón anterior o None}]
-    Sin `permitir_precio`, el precio y el descuento de los modelos se quedan como estaban (o los del inventario si
-    el modelo es nuevo). Con permiso, si cambian hace falta `autorizo`.
-    Devuelve (mensaje, avisos, cambios_precio). Lanza ValueError si algo no es válido."""
+    Devuelve (mensaje, avisos). Lanza ValueError si algo no es válido."""
     numero = ped["numero_pedido"]
     if ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado":
         raise ValueError("Un pedido cancelado no se puede editar. Reactívalo primero.")
@@ -466,7 +374,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
     viejos = sb.table("pedido_items").select("*").eq("numero_pedido", numero).order("id").execute().data
     modelos_viejos = {str(i["modelo"]) for i in viejos if i.get("modelo")}
 
-    items, vistos, cambios_precio = [], set(), []
+    items, vistos = [], set()
     for n, f in enumerate(filas, 1):
         modelo = _nn(f.get("modelo"))
         orig = f.get("orig")
@@ -491,7 +399,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                 if info is None:
                     raise ValueError(f"Renglón {n}: el modelo {modelo} no existe en el inventario.")
                 if info.get("reservado") and not aceptar_vendidos:
-                    raise ValueError(f"Renglón {n}: {texto_reservado(sb, modelo)}. "
+                    raise ValueError(f"Renglón {n}: el modelo {modelo} está RESERVADO por una cotización. "
                                      "Conviértela a pedido desde Cotizaciones, o marca «Aceptar modelos que ya figuran como vendidos».")
                 if info["vendido"] and not aceptar_vendidos:
                     raise ValueError(f"Renglón {n}: el modelo {modelo} ya figura como vendido. "
@@ -504,42 +412,18 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                 if not costo_tocado:
                     costo = round(info["costo"], 2)
                 util_inv = info["utilidad_bruta"]
-        # Precio de referencia: el que ya tenía el renglón; el del inventario si el modelo es otro; 0 si es un S/N nuevo
-        if orig is not None and str(orig.get("modelo") or "") == (modelo or ""):
-            ref_p, ref_d = _num(orig.get("precio_unitario")), _num(orig.get("descuento_pct"))
-        elif modelo:
-            info_ref = info if (modelo and info is not None) else buscar_modelo(sb, modelo)
-            ref_p, ref_d = (_num(info_ref["precio"]) if info_ref else 0.0), 0.0
-        else:
-            ref_p, ref_d = 0.0, 0.0
-            if not permitir_precio:
-                raise ValueError(f"Renglón {n}: para agregar un S/N hay que ponerle precio, y eso necesita autorización: "
-                                 "marca la casilla «Cambiar precio…» y elige quién autorizó.")
-        if not permitir_precio:
-            precio = round(ref_p, 2)          # sin la casilla el precio no cambia
-        c = precios.cambio(modelo, f.get("descripcion"), ref_p, ref_d, precio, desc_pct)
-        if c:
-            cambios_precio.append(c)
         items.append({"es_sn": not modelo, "modelo": modelo, "descripcion": _nn(f.get("descripcion")),
                       "cantidad": cantidad, "precio_unitario": precio, "costo_unitario": costo,
                       "utilidad_bruta_inv": util_inv, "descuento_pct": desc_pct})
 
-    if cambios_precio and not autorizo:
-        raise ValueError("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
-    envio_ant = round(_num(ped.get("envio")), 2)
-    envio = envio_ant if envio is None else round(max(_num(envio), 0.0), 2)
-    if envio and "envio" not in ped:
-        raise ValueError("Falta la columna «envio» en la tabla pedidos de Supabase. Pide que corran el SQL del envío.")
     calc = calcular(items, _num(ped.get("descuento_pct")), bool(ped.get("con_iva")),
-                    _num(ped.get("anticipo")), ped.get("status"), envio)
-    nota = (f"Total ${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}"
-            + (f" (envío ${envio_ant:,.2f} → ${envio:,.2f})" if envio != envio_ant else "") + ".")
-    # El cambio queda en el registro de cambios; las observaciones son solo las notas del vendedor
+                    _num(ped.get("anticipo")), ped.get("status"))
+    nota = (f"[{dt.date.today().isoformat()} {usuario}] Productos editados: total "
+            f"${_num(ped.get('total')):,.2f} → ${calc['total']:,.2f}.")       # sin costos: la nota la ven los vendedores
+    previas = (ped.get("observaciones") or "").strip()
     nuevos_datos = {"subtotal": calc["subtotal"], "iva": calc["iva"], "total": calc["total"],
-                    "costo_total": calc["costo"]}
-    if "envio" in ped:
-        nuevos_datos["envio"] = envio
-    anteriores = {k: ped.get(k) for k in nuevos_datos}
+                    "costo_total": calc["costo"], "observaciones": (previas + "\n" + nota).strip()}
+    anteriores = {k: ped.get(k) for k in ("subtotal", "iva", "total", "costo_total", "observaciones")}
 
     sb.table("pedidos").update(nuevos_datos).eq("numero_pedido", numero).execute()
     try:
@@ -574,7 +458,7 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                       f"(${_num(ped.get('anticipo')):,.2f}): hay un saldo a favor del cliente. Revisa los pagos.")
     if ped.get("status") in SALDO_CERO and ped.get("status") != "Cancelado" and abs(calc["total"] - _num(ped.get("total"))) > 0.005:
         avisos.append("El pedido figura como pagado y su total cambió: revisa que los pagos registrados cuadren con el nuevo total.")
-    return f"Pedido {numero}: productos actualizados. {nota}", avisos, cambios_precio
+    return f"Pedido {numero}: productos actualizados. Nuevo total ${calc['total']:,.2f}.", avisos
 
 
 def actualizar_facturacion(sb, numero, efectivo, con_iva, sin_iva, no_factura, calcular_sin_iva=True):
@@ -665,16 +549,6 @@ document.getElementById("w{clave}").onclick = async () => {{
 COPIAS_IMPRESION = ["ORIGINAL", "COPIA CLIENTE"]
 
 
-def formas_pago(pagos):
-    """Formas de pago distintas del pedido, en el orden en que se registraron (para el PDF: solo el método)."""
-    vistas = []
-    for p in sorted(pagos or [], key=lambda x: x.get("id") or 0):
-        f = str(p.get("forma_pago") or "").strip()
-        if f and _num(p.get("monto")) > 0 and f not in vistas:
-            vistas.append(f)
-    return vistas
-
-
 def _generar_pdf(ped, items, vendedores, doble=False):
     """Genera el PDF con pedido_pdf.py (requiere: pip install reportlab)."""
     from pedido_pdf import generar_pdf_pedido
@@ -686,11 +560,6 @@ def pdf_de_pedido(sb, numero, doble=False):
     ped = sb.table("pedidos").select("*").eq("numero_pedido", numero).execute().data[0]
     items = sb.table("pedido_items").select("*").eq("numero_pedido", numero).order("id").execute().data
     vends = sb.table("pedido_vendedores").select("vendedor").eq("numero_pedido", numero).execute().data
-    try:
-        pagos = sb.table("pedido_pagos").select("forma_pago,monto,id").eq("numero_pedido", numero).execute().data
-        ped = dict(ped, _formas_pago=formas_pago(pagos))
-    except Exception:
-        pass
     return _generar_pdf(ped, items, [v["vendedor"] for v in vends], doble)
 
 
@@ -793,7 +662,6 @@ def iniciar_conversion(sb, cot, items_cot):
         "precio_unitario": _num(i.get("precio_unitario")), "costo_unitario": _num(i.get("costo_unitario")),
         "utilidad_bruta_inv": _num(i.get("utilidad_bruta_inv")),
         "descuento_pct": _num(i.get("descuento_pct")),
-        "precio_lista": _num(i.get("precio_unitario")), "desc_lista": _num(i.get("descuento_pct")),
     } for i in items_cot]
     ss["vt_desde_cot"] = {"id": cot["id"], "codigo": cot.get("codigo"),
                           "apartados": [i["modelo"] for i in items_cot if i.get("apartado") and i.get("modelo")]}
@@ -802,152 +670,6 @@ def iniciar_conversion(sb, cot, items_cot):
 def cancelar_conversion():
     st.session_state.pop("vt_desde_cot", None)
     _reset_formulario()
-
-
-CAMPOS_ENTREGA = ("requiere_entrega", "domicilio", "atencion", "fecha_entrega", "horario_entrega",
-                  "telefono_entrega", "email_entrega", "notas_entrega")
-CAMPOS_FACTURA = ("requiere_facturacion", "uso_cfdi", "concepto", "telefono_facturacion", "email_facturacion",
-                  "notas_facturacion")
-
-
-def _editar_entrega_facturacion(sb, ped, sel):
-    """Expander del detalle: agregar, quitar o corregir los datos de entrega y de facturación de un pedido guardado."""
-    def v(c):
-        return ped.get(c) or ""
-
-    def fecha(c):
-        try:
-            return dt.date.fromisoformat(str(ped.get(c))[:10]) if ped.get(c) else None
-        except ValueError:
-            return None
-
-    k = lambda n: f"vp_ef_{n}_{sel}"
-    with st.expander("Datos de entrega y facturación"):
-        st.caption("Agrega, corrige o quita los datos de entrega y de facturación. Al marcar facturación, el pedido "
-                   "aparece en «Por facturar».")
-        req_ent = st.checkbox("Este pedido lleva DATOS DE ENTREGA", value=bool(ped.get("requiere_entrega")),
-                              key=k("req_ent"))
-        nuevos = {"requiere_entrega": bool(req_ent)}
-        if req_ent:
-            with st.container(border=True):
-                e1, e2 = st.columns(2)
-                nuevos["domicilio"] = e1.text_area("DOMICILIO", value=v("domicilio"), key=k("dom"), height=90)
-                nuevos["atencion"] = e2.text_input("ATENCIÓN", value=v("atencion"), key=k("aten"))
-                e3, e4 = st.columns(2)
-                nuevos["fecha_entrega"] = _fecha_iso(e3.date_input("FECHA DE ENTREGA", value=fecha("fecha_entrega"),
-                                                                   key=k("fent"), format="DD/MM/YYYY"))
-                nuevos["horario_entrega"] = e4.text_input("HORARIO DE ENTREGA", value=v("horario_entrega"), key=k("hent"))
-                e5, e6 = st.columns(2)
-                nuevos["telefono_entrega"] = e5.text_input("TELÉFONO (de quien recibe)", value=v("telefono_entrega"),
-                                                           key=k("tel_ent"))
-                nuevos["email_entrega"] = e6.text_input("E-MAIL (de quien recibe)", value=v("email_entrega"),
-                                                        key=k("mail_ent"))
-                nuevos["notas_entrega"] = st.text_input("NOTAS DE ENTREGA", value=v("notas_entrega"), key=k("notas_ent"))
-
-        facturado = bool(ped.get("no_factura"))
-        req_fac = st.checkbox("Este pedido lleva DATOS DE FACTURACIÓN", value=bool(ped.get("requiere_facturacion")),
-                              key=k("req_fac"), disabled=facturado and bool(ped.get("requiere_facturacion")),
-                              help="Ya tiene N° de factura: no se puede quitar." if facturado else None)
-        nuevos["requiere_facturacion"] = bool(req_fac)
-        if req_fac:
-            with st.container(border=True):
-                f1, f2 = st.columns(2)
-                nuevos["uso_cfdi"] = f1.text_input("USO DE CFDI", value=v("uso_cfdi"), key=k("cfdi"))
-                conc = v("concepto")
-                ops = CONCEPTOS_FACTURA + ([conc] if conc and conc not in CONCEPTOS_FACTURA else [])
-                nuevos["concepto"] = f2.selectbox("CONCEPTO *", ops, index=ops.index(conc) if conc in ops else None,
-                                                  key=k("concepto"), placeholder="Elegir…") or ""
-                f3, f4 = st.columns(2)
-                nuevos["telefono_facturacion"] = f3.text_input("TELÉFONO (de quien factura)",
-                                                               value=v("telefono_facturacion"), key=k("tel_fac"))
-                nuevos["email_facturacion"] = f4.text_input("E-MAIL (de quien factura)",
-                                                            value=v("email_facturacion"), key=k("mail_fac"))
-                nuevos["notas_facturacion"] = st.text_input("NOTAS DE FACTURACIÓN", value=v("notas_facturacion"),
-                                                            key=k("notas_fac"))
-
-        q_v, q_c = codigos.pedir_identidad(sb, k("id"))
-        if st.button("Guardar datos de entrega y facturación", type="primary", key=k("guardar")):
-            if req_fac and not nuevos.get("concepto"):
-                st.error("Elige el concepto de facturación (o desmarca los datos de facturación).")
-                return
-            quien = codigos.confirmar(sb, q_v, q_c)
-            if not quien:
-                return
-            # Lo que no se muestra (sección desmarcada) se conserva tal cual: si la vuelven a marcar, ahí sigue
-            datos = {c: (_nn(x) if isinstance(x, str) else x) for c, x in nuevos.items()}
-            cambios = [c for c, x in datos.items() if (ped.get(c) or None) != (x or None)
-                       and not (isinstance(x, bool) and bool(ped.get(c)) == x)]
-            if not cambios:
-                st.info("No hay cambios que guardar.")
-                return
-            try:
-                sb.table("pedidos").update(datos).eq("numero_pedido", sel).execute()
-            except Exception as ex:
-                st.error(f"No se pudo guardar: {ex}")
-                return
-            resumen = []
-            if "requiere_entrega" in cambios:
-                resumen.append("agregó entrega" if req_ent else "quitó entrega")
-            if "requiere_facturacion" in cambios:
-                resumen.append("agregó facturación" if req_fac else "quitó facturación")
-            otros = [c for c in cambios if c not in ("requiere_entrega", "requiere_facturacion")]
-            if otros:
-                resumen.append("cambió " + ", ".join(otros))
-            codigos.registrar(sb, quien, "Editó entrega/facturación", "pedido", sel, "; ".join(resumen))
-            st.session_state["vp_msg"] = f"Pedido {sel}: datos de entrega y facturación guardados."
-            st.rerun()
-
-
-def _editar_pagos_ui(sb, ped, pagos, sel):
-    """Expander del detalle: corregir cómo y dónde se pagó (forma de pago, banco / caja, monto y fecha)."""
-    with st.expander("Pagos: cómo y dónde se pagó"):
-        st.caption("Corrige la forma de pago, el banco / caja, el monto o la fecha de los cobros ya registrados. "
-                   "Lo cobrado y el saldo se recalculan solos. Para un cobro nuevo usa «Registrar el cobro del saldo» "
-                   "en «Cambiar status / observaciones».")
-        formas = list(catalogo(sb, "forma_pago"))
-        bancos = list(catalogo(sb, "banco_caja"))
-        for p in pagos:                          # que un valor viejo que ya no está en el catálogo se pueda ver
-            if p.get("forma_pago") and p["forma_pago"] not in formas:
-                formas.append(p["forma_pago"])
-            if p.get("banco_caja") and p["banco_caja"] not in bancos:
-                bancos.append(p["banco_caja"])
-        base = pd.DataFrame([{"id": p["id"], "forma_pago": p.get("forma_pago"), "banco_caja": p.get("banco_caja"),
-                              "monto": _num(p.get("monto")),
-                              "fecha_pago": _fecha_de(p.get("fecha_pago"))} for p in pagos])
-        ed = st.data_editor(
-            base, hide_index=True, use_container_width=True, num_rows="fixed", key=f"vp_pg_{sel}",
-            column_config={"id": None,
-                           "forma_pago": st.column_config.SelectboxColumn("FORMA DE PAGO", options=formas, required=True),
-                           "banco_caja": st.column_config.SelectboxColumn("BANCO / CAJA", options=bancos),
-                           "monto": st.column_config.NumberColumn("MONTO", min_value=0.0, format="$%.2f"),
-                           "fecha_pago": st.column_config.DateColumn("FECHA DE PAGO", format="DD/MM/YYYY")})
-        q_v, q_c = codigos.pedir_identidad(sb, f"vp_pg_id_{sel}")
-        if st.button("Guardar pagos", type="primary", key=f"vp_pg_ok_{sel}") \
-                and (quien := codigos.confirmar(sb, q_v, q_c)):
-            filas = [{k: (None if (not isinstance(v, (list, dict)) and pd.isna(v)) else v) for k, v in r.items()}
-                     for r in ed.to_dict("records")]
-            try:
-                detalle = editar_pagos(sb, ped, filas, quien)
-            except ValueError as ex:
-                st.error(str(ex))
-                return
-            except Exception as ex:
-                st.error(f"No se pudo guardar: {ex}")
-                return
-            codigos.registrar(sb, quien, "Corrigió pagos", "pedido", sel, detalle)
-            st.session_state["vp_msg"] = f"Pedido {sel}: pagos corregidos."
-            cobrado = round(sum(_num(r.get("monto")) for r in filas), 2)
-            if ped.get("status") in SALDO_CERO and cobrado < round(_num(ped.get("total")), 2) - 0.01:
-                st.session_state["vp_avisos"] = [f"Ahora lo cobrado (${cobrado:,.2f}) es menor que el total, pero el status "
-                                                 f"sigue en «{ped.get('status')}». Revísalo en «Cambiar status / observaciones»."]
-            st.rerun()
-
-
-def _fecha_de(v):
-    try:
-        return dt.date.fromisoformat(str(v)[:10]) if v else None
-    except ValueError:
-        return None
 
 
 def tab_nuevo_pedido(sb, user, desde_cot=False):
@@ -974,7 +696,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         _mostrar_ultimo("np")
     else:
         st.subheader(f"Pasar a pedido la cotización {dc['codigo']}")
-        st.caption("Los productos, precios y descuentos vienen de la cotización. Completa lo que falta "
+        st.caption("Los productos, precios y descuentos vienen de la cotización (ya están apartados). Completa lo que falta "
                    "desde el pago en adelante y guarda.")
         if st.button("Cancelar conversión (la cotización sigue vigente)", key="vt_cancel_conv"):
             cancelar_conversion()
@@ -1079,7 +801,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 st.error(f"El modelo {m} no existe en el inventario. Si no tiene número, usa 'Producto sin número (S/N)'.")
             else:
                 if prod.get("reservado") and not ss.get("vt_desde_cot"):
-                    st.warning(f"{texto_reservado(sb, m)}. Se agregó de todos modos; "
+                    st.warning(f"El modelo {m} está RESERVADO por una cotización vigente. Se agregó de todos modos; "
                                "si es la misma venta, mejor usa «Pasar a pedido» desde Cotizaciones.")
                 if prod["vendido"]:
                     ped_shop = _venta_shopify_de(sb, m)
@@ -1095,7 +817,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                     "descripcion": prod["nombre"] or "Sin nombre", "cantidad": int(cant_txt),
                     "precio_unitario": prod["precio"], "costo_unitario": prod["costo"],
                     "utilidad_bruta_inv": prod["utilidad_bruta"], "descuento_pct": 0.0,
-                    "precio_lista": prod["precio"], "desc_lista": 0.0,
                 })
 
     with st.expander("Producto sin número de modelo (S/N)"):
@@ -1110,7 +831,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             else:
                 sn_costo = 0.0
             sn_cant = s5.number_input("CANT.", min_value=1, value=1, step=1)
-            st.caption("El precio de un S/N necesita autorización de Viriato o Ernesto al guardar el pedido.")
             agregar_sn = st.form_submit_button("Agregar S/N")
         if agregar_sn:
             if not sn_nombre.strip() or sn_precio <= 0:
@@ -1130,7 +850,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
     con_iva = st.checkbox("Desglosar IVA (el cliente lo pidió)", key=k("iva"),
                           help="Apagado: subtotal = total. Prendido: subtotal = total / 1.16.")
     anticipo = 0.0      # ya no se captura: lo cobrado sale de los pagos de la sección «Pago»
-    envio = float(ss.get(k("envio")) or 0.0)
 
     # Lista de renglones (precio y cantidad editables)
     if items:
@@ -1141,53 +860,27 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         h6.caption("DESC. %")
         h4.caption("TOTAL (con desc.)")
         quitar = None
-        precio_hab = precios.habilitado(k("precio"))
         for it in items:
             c1, c2, c3, c6, c4, c5 = st.columns([4, 1, 2, 1, 2, 1])
             etiqueta = "S/N" if it["es_sn"] else it["modelo"]
             c1.markdown(f"**{etiqueta}** — {it['descripcion']}")
             it["cantidad"] = c2.number_input("cant", min_value=1, value=int(it["cantidad"]), step=1,
                                              key=k(f"cant_{it['id']}"), label_visibility="collapsed")
-            if not precio_hab:
-                # Precio bloqueado: el del inventario / cotización. Un S/N conserva el que se capturó (al guardar
-                # pide autorización). El descuento es libre hasta 10%.
-                if _num(it.get("precio_lista")) > 0:
-                    it["precio_unitario"] = float(it["precio_lista"])
-                c3.number_input("precio", value=float(it["precio_unitario"]), format="%.2f", disabled=True,
-                                key=k(f"precio_b_{it['id']}"), label_visibility="collapsed")
-                tope = max(precios.DESC_LIBRE, _num(it.get("desc_lista")))
-                it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=float(tope),
-                                                      value=float(min(_num(it.get("descuento_pct")), tope)),
-                                                      step=5.0, format="%.1f", key=k(f"dsc_{it['id']}"),
-                                                      label_visibility="collapsed")
-            else:
-                it["precio_unitario"] = c3.number_input("precio", min_value=0.0, value=float(it["precio_unitario"]),
-                                                        step=50.0, format="%.2f", key=k(f"precio_{it['id']}"),
-                                                        label_visibility="collapsed")
-                it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=100.0,
-                                                      value=float(it.get("descuento_pct") or 0.0), step=5.0,
-                                                      format="%.1f", key=k(f"dsc_h_{it['id']}"),
-                                                      label_visibility="collapsed")
+            it["precio_unitario"] = c3.number_input("precio", min_value=0.0, value=float(it["precio_unitario"]),
+                                                    step=50.0, format="%.2f", key=k(f"precio_{it['id']}"),
+                                                    label_visibility="collapsed")
+            it["descuento_pct"] = c6.number_input("desc", min_value=0.0, max_value=100.0,
+                                                  value=float(it.get("descuento_pct") or 0.0), step=5.0,
+                                                  format="%.1f", key=k(f"dsc_{it['id']}"),
+                                                  label_visibility="collapsed")
             c4.markdown(f"**${calcular([it], 0.0, False, 0.0)['total']:,.2f}**")
             if c5.button("Quitar", key=k(f"del_{it['id']}")):
                 quitar = it["id"]
-        # Envío: un renglón más, abajo de los modelos
-        e1, e2, e3, e6, e4, e5 = st.columns([4, 1, 2, 1, 2, 1])
-        e1.markdown("**ENVÍO** — Servicio de envío (IVA incluido; déjalo en 0 si no lleva)")
-        e2.markdown("1")
-        envio = e3.number_input("envío", min_value=0.0, step=100.0, format="%.2f", key=k("envio"),
-                                label_visibility="collapsed",
-                                help="Se suma al total, pero no cuenta para la utilidad ni la comisión. "
-                                     "No lo agregues como producto S/N.")
-        e4.markdown(f"**${envio:,.2f}**")
-        precio_hab, precio_aut = precios.control(k("precio"))
         if quitar:
             ss["vt_items"] = [i for i in items if i["id"] != quitar]
             st.rerun()
-    else:
-        precio_hab, precio_aut = False, None
 
-    calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")), envio)
+    calc = calcular(items, descuento, con_iva, anticipo, ss.get(k("status")))
 
     if items:
         st.caption("Totales por renglón: " + " · ".join(
@@ -1239,7 +932,7 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
     anticipo_ef = anticipo_efectivo(anticipo, pagos, calc["total"])
     if es_pagado(status, estado) and not any(p["monto"] > 0 for p in pagos):
         anticipo_ef = calc["total"]          # pagado y sin montos capturados: se toma como pagado el total
-    calc = calcular(items, descuento, con_iva, anticipo_ef, status, envio)
+    calc = calcular(items, descuento, con_iva, anticipo_ef, status)
     with caja_totales:
         t1, t2, t3, t4 = st.columns(4)
         t1.metric("TOTAL", f"${calc['total']:,.2f}")
@@ -1247,9 +940,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         t3.metric("SALDO", f"${calc['saldo']:,.2f}")
         if con_iva:
             t4.metric("SUBTOTAL / IVA", f"${calc['subtotal']:,.2f} / ${calc['iva']:,.2f}")
-        if calc["envio"]:
-            st.caption(f"Productos ${calc['total_productos']:,.2f} + envío ${calc['envio']:,.2f} = "
-                       f"total ${calc['total']:,.2f}" + (" (subtotal e IVA son solo de los productos)" if con_iva else ""))
         if ve_costos and items:
             u1, u2, u3 = st.columns(3)
             u1.metric("COSTO", f"${calc['costo']:,.2f}")
@@ -1282,20 +972,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
             errores.append("El total es 0. Revisa los precios (o usa status Obsequio).")
         if req_fact and not concepto:
             errores.append("Elige el concepto de facturación (o desmarca los datos de facturación).")
-        cambios_precio = precios.cambios_de_items(items)
-        if cambios_precio and not precio_aut:
-            errores.append("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
-        if dc and not cancelado:
-            # cotización que no apartó (vigencia 0): revisar que sus modelos sigan disponibles
-            for it in items:
-                if it["es_sn"] or it["modelo"] in dc["apartados"]:
-                    continue
-                info = buscar_modelo(sb, it["modelo"])
-                if info and info["vendido"]:
-                    errores.append(f"El modelo {it['modelo']} ya está VENDIDO.")
-                elif info and info.get("reservado") and etiqueta_reserva(sb, it["modelo"]).startswith("en la remisión"):
-                    errores.append(texto_reservado(sb, it["modelo"]) + ".")
-                # apartado por OTRA cotización: se puede vender; en aquella queda dado de baja
 
         if len(pagos) == 1 and pagos[0]["monto"] == 0:
             pagos[0]["monto"] = float(calc["total"])
@@ -1325,19 +1001,17 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 "con_iva": bool(con_iva), "descuento_pct": float(descuento),
                 "costo_total": calc["costo"], "subtotal": calc["subtotal"], "iva": calc["iva"],
                 "total": calc["total"], "anticipo": float(anticipo_ef),
-                **({"envio": calc["envio"]} if calc["envio"] else {}),
                 "fecha_pago": min(fechas) if fechas else None,
                 "created_by": responsable, "origen": "app",
             }
+            if dc:
+                nota_cot = f"Viene de la cotización {dc['codigo']}."
+                datos["observaciones"] = (nota_cot + " " + (datos["observaciones"] or "")).strip()
             with st.spinner("Guardando pedido..."):
                 try:
                     numero = guardar_pedido(sb, datos, items, calc["lineas"], vendedores, pagos_validos)
                 except Exception as ex:
-                    if "envio" in str(ex):
-                        st.error("No se pudo guardar: falta la columna «envio» en la tabla pedidos de Supabase "
-                                 "(hay que correr el SQL del envío). Mientras, deja el envío en 0.")
-                    else:
-                        st.error(f"No se pudo guardar el pedido: {ex}")
+                    st.error(f"No se pudo guardar el pedido: {ex}")
                     return
                 avisos = []
                 apartados = set(dc["apartados"]) if dc else set()
@@ -1374,9 +1048,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                                       "Revísala en Cotizaciones.")
             codigos.registrar(sb, responsable, "Pedido creado" + (f" (de {dc['codigo']})" if dc else ""), "pedido", numero,
                               f"{cliente.strip()} · total ${calc['total']:,.2f}")
-            a = precios.registrar(sb, f"Pedido {numero}", cambios_precio, precio_aut, responsable)
-            if a:
-                avisos.append(a)
             _clientes_registrados.clear()   # que el cliente nuevo aparezca ya en las sugerencias
             pdf = pdf2 = None
             try:
@@ -1396,75 +1067,6 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
 # ----------------------------------------------------------------------
 # PESTAÑA: PEDIDOS (consulta y cancelación)
 # ----------------------------------------------------------------------
-@guardar_en_memoria(ttl=30)
-def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtro_vend=(), filtro_forma=(),
-                   filtro_banco=()):
-    """Lista de pedidos (con memoria de 30 s; se borra sola al guardar cualquier cambio).
-    filtro_vend: pedidos donde participa cualquiera de esos vendedores.
-    filtro_forma / filtro_banco: pedidos con algún pago de esa forma de pago / en ese banco o caja.
-    Cada fila trae «pago»: cómo y a dónde se pagó («Efectivo · CAJA $1,000 + Transferencia · BBVA $500»)."""
-    def consulta(numeros=None):
-        q = (_sb.table("pedidos")
-             .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
-             .gte("numero_pedido", pedido_desde())                # los anteriores no se muestran (corte.py)
-             .order("numero_pedido", desc=True).limit(limite))
-        if numeros is not None:
-            q = q.in_("numero_pedido", numeros)
-        if busq:
-            if busq.isdigit():
-                q = q.eq("numero_pedido", int(busq))
-            else:
-                q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
-        if filtro_status:
-            q = q.in_("status", list(filtro_status))
-        if sin_costo:
-            q = q.eq("costo_total", 0).neq("status", "Cancelado")
-        return q.execute().data
-
-    # Pedidos posibles según vendedor y pago (si hay esos filtros)
-    posibles = None
-    if filtro_vend:
-        posibles = {r["numero_pedido"] for r in (_sb.table("pedido_vendedores").select("numero_pedido")
-                                                 .in_("vendedor", list(filtro_vend)).limit(20000).execute().data or [])}
-    if filtro_forma or filtro_banco:
-        q = _sb.table("pedido_pagos").select("numero_pedido").limit(20000)
-        if filtro_forma:
-            q = q.in_("forma_pago", list(filtro_forma))
-        if filtro_banco:
-            q = q.in_("banco_caja", list(filtro_banco))
-        por_pago = {r["numero_pedido"] for r in (q.execute().data or [])}
-        posibles = por_pago if posibles is None else (posibles & por_pago)
-
-    if posibles is None:
-        filas = consulta()
-    else:
-        nums, filas = sorted(posibles, reverse=True), []
-        for i in range(0, len(nums), 300):          # de a 300 para no armar una consulta enorme
-            filas += consulta(nums[i:i + 300])
-            if len(filas) >= limite:
-                break
-        filas.sort(key=lambda r: r["numero_pedido"], reverse=True)
-        filas = filas[:limite]
-
-    # Columna «cómo y a dónde se pagó»
-    nums = [f["numero_pedido"] for f in filas]
-    pagos = {}
-    for i in range(0, len(nums), 300):
-        for p in (_sb.table("pedido_pagos").select("numero_pedido,forma_pago,banco_caja,monto")
-                  .in_("numero_pedido", nums[i:i + 300]).order("id").execute().data or []):
-            pagos.setdefault(p["numero_pedido"], []).append(p)
-    for f in filas:
-        ps = pagos.get(f["numero_pedido"], [])
-        partes = []
-        for p in ps:
-            t = " · ".join(x for x in (p.get("forma_pago"), p.get("banco_caja")) if x)
-            if len(ps) > 1:
-                t += f" ${_num(p.get('monto')):,.0f}"
-            partes.append(t)
-        f["pago"] = " + ".join(partes)
-    return filas
-
-
 def tab_pedidos(sb, user):
     ve_costos = user["role"] in ROLES_COSTOS
     puede_cancelar = user["role"] in ROLES_CANCELAR
@@ -1485,28 +1087,30 @@ def tab_pedidos(sb, user):
 
     busq = st.text_input("Buscar por N° de pedido o por cliente", key="vp_busq").strip()
 
-    f1, f3, f2 = st.columns([3, 3, 2])
+    f1, f2 = st.columns([3, 2])
     status_opts = catalogo(sb, "status")
     filtro_status = f1.multiselect("Filtrar por status", status_opts, key="vp_f_status",
                                    placeholder="Todos los status")
-    filtro_vend = f3.multiselect("Filtrar por vendedor", catalogo(sb, "vendedor"), key="vp_f_vend",
-                                 placeholder="Todos los vendedores",
-                                 help="Pedidos donde participa ese vendedor (como responsable o compartido).")
-    g1, g2, _g3 = st.columns([3, 3, 2])
-    filtro_forma = g1.multiselect("Filtrar por forma de pago", catalogo(sb, "forma_pago"), key="vp_f_forma",
-                                  placeholder="Todas las formas de pago")
-    filtro_banco = g2.multiselect("Filtrar por banco / caja", catalogo(sb, "banco_caja"), key="vp_f_banco",
-                                  placeholder="Todos los bancos / cajas",
-                                  help="Pedidos con al menos un pago en ese banco o caja.")
     sin_costo = False
     if ve_costos:
         sin_costo = f2.checkbox("Solo pedidos sin costo", key="vp_f_sincosto",
                                 help="Pedidos con costo total en $0 (sin costo capturado). No incluye cancelados.")
-    hay_filtro = bool(busq or filtro_status or sin_costo or filtro_vend or filtro_forma or filtro_banco)
+    hay_filtro = bool(busq or filtro_status or sin_costo)
     limite = 500 if hay_filtro else 50
 
-    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, limite, tuple(filtro_vend),
-                          tuple(filtro_forma), tuple(filtro_banco))
+    q = (sb.table("pedidos")
+         .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
+         .order("numero_pedido", desc=True).limit(limite))
+    if busq:
+        if busq.isdigit():
+            q = q.eq("numero_pedido", int(busq))
+        else:
+            q = q.ilike("cliente", f"%{re.sub(r'[%,()]', '', busq)}%")
+    if filtro_status:
+        q = q.in_("status", filtro_status)
+    if sin_costo:
+        q = q.eq("costo_total", 0).neq("status", "Cancelado")
+    rows = q.execute().data
     if not rows:
         st.info("No hay pedidos para mostrar con ese filtro." if hay_filtro else "No hay pedidos para mostrar.")
         return
@@ -1520,7 +1124,7 @@ def tab_pedidos(sb, user):
     df = pd.DataFrame(rows).rename(columns={
         "numero_pedido": "N° PEDIDO", "fecha": "FECHA", "cliente": "CLIENTE", "total": "TOTAL",
         "anticipo": "ANTICIPO", "saldo": "SALDO", "status": "STATUS", "estado_pedido": "OBSERVACIONES",
-        "costo_total": "COSTO", "pago": "PAGO (CÓMO Y DÓNDE)"})
+        "costo_total": "COSTO"})
     if not ve_costos and "COSTO" in df.columns:
         df = df.drop(columns=["COSTO"])
     st.dataframe(df, use_container_width=True, hide_index=True)
@@ -1543,8 +1147,6 @@ def tab_pedidos(sb, user):
     m1.metric("TOTAL", f"${_num(ped['total']):,.2f}")
     m2.metric("ANTICIPO", f"${_num(ped['anticipo']):,.2f}")
     m3.metric("SALDO", f"${_num(ped['saldo']):,.2f}")
-    if _num(ped.get("envio")):
-        st.caption(f"El total incluye envío de ${_num(ped.get('envio')):,.2f} (no cuenta para utilidad ni comisión).")
     if ve_costos:
         n1, n2, n3 = st.columns(3)
         n1.metric("COSTO", f"${_num(ped['costo_total']):,.2f}")
@@ -1556,42 +1158,13 @@ def tab_pedidos(sb, user):
         g3.metric("FACTURADO SIN IVA", f"${_num(ped.get('facturado_sin_iva')):,.2f}")
         g4.metric("N° FACTURA", ped.get("no_factura") or "—")
 
-    # Firma del cliente (opcional): sale en el recuadro «Firma y nombre del Cliente» del PDF
     try:
-        import firmas
-        fz = firmas.para_pdf(firmas.widget(sb, "pedido", sel))
-        if fz:
-            ped = dict(ped, _firma=fz)
-    except Exception as ex:
-        st.caption(f"Firma no disponible: {ex}")
-
-    ped = dict(ped, _formas_pago=formas_pago(pagos))      # en el PDF sale solo el método de pago
-
-    # El PDF se arma solo cuando se pide (antes se armaban 2 en cada clic: ~15 MB y tiempo). Se guarda uno a la vez
-    # y se descarta si el pedido cambió.
-    firma = hash(repr((sorted(ped.items()), [sorted(i.items()) for i in items], [v["vendedor"] for v in vends])))
-    guardado = st.session_state.get("vp_pdf")
-    if guardado and (guardado.get("num") != sel or guardado.get("firma") != firma):
-        st.session_state.pop("vp_pdf", None)
-        guardado = None
-    if guardado is None:
-        if st.button("📄 Preparar PDF (descargar / imprimir / WhatsApp)", key=f"vp_prep_{sel}"):
-            try:
-                nombres = [v["vendedor"] for v in vends]
-                st.session_state["vp_pdf"] = {"num": sel, "firma": firma, "pdf": _generar_pdf(ped, items, nombres),
-                                              "pdf2": _generar_pdf(ped, items, nombres, doble=True)}
-                st.rerun()
-            except Exception as ex:
-                st.caption(f"No se pudo generar el PDF: {ex}")
-    else:
-        botones_pedido(guardado["pdf"], guardado["pdf2"], f"pedido_{sel}.pdf", ped.get("telefono"),
+        pdf = _generar_pdf(ped, items, [v["vendedor"] for v in vends])
+        botones_pedido(pdf, _generar_pdf(ped, items, [v["vendedor"] for v in vends], doble=True),
+                       f"pedido_{sel}.pdf", ped.get("telefono"),
                        f"Hola {ped.get('cliente') or ''}, te comparto tu pedido N° {sel} de Viriathus.", f"p{sel}")
-    if ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
-        try:
-            from remisiones import boton_remision_pedido
-            boton_remision_pedido(sb, ped, user)
-        except Exception as ex:
-            st.caption(f"Remisiones no disponible: {ex}")
+    except Exception as ex:
+        st.caption(f"No se pudo generar el PDF: {ex}")
 
     if items:
         dfi = pd.DataFrame(items)
@@ -1671,34 +1244,20 @@ def tab_pedidos(sb, user):
                         st.session_state["vp_avisos"] = avisos
                         st.rerun()
 
-    if user["role"] in ROLES_EDITAR and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
-        _editar_entrega_facturacion(sb, ped, sel)
-        if pagos:
-            _editar_pagos_ui(sb, ped, pagos, sel)
-
     if puede_cancelar and items and ped.get("estado_pedido") != "Cancelado" and ped.get("status") != "Cancelado":
         with st.expander("Editar productos del pedido" + (" (modelo, precio, costo)" if ve_costos else " (modelo, precio, descuento)")):
-            st.markdown("- **Quitar un producto:** marca su casilla **QUITAR** (última columna).\n"
-                        "- **Agregar uno:** escríbelo en un renglón vacío de abajo (modelo vacío = S/N).\n"
-                        "- **Envío:** ponlo en el campo **ENVÍO**, no como producto S/N.\n"
-                        "- Luego tu código y **Guardar productos**. Nada se guarda hasta ese botón.")
-            st.caption("Se recalculan subtotal, IVA, total, costo, utilidad y comisión; los modelos que salen vuelven a "
-                       "disponible y los que entran quedan vendidos. Los pagos registrados no cambian.")
-            vers = st.session_state.get(f"vp_ei_v_{sel}", 0)
-            vacio = {"modelo": "", "descripcion": "", "cantidad": 1, "precio_unitario": 0.0, "descuento_pct": 0.0,
-                     **({"costo_unitario": 0.0} if ve_costos else {}), "quitar": False}
+            st.caption("Cambia modelos, descripciones, cantidades, precios o costos de este pedido. Puedes agregar o quitar "
+                       "renglones. Deja el modelo vacío para un renglón S/N. Se recalculan subtotal, IVA, total, costo, "
+                       "utilidad y comisión; los modelos que salen vuelven a disponible y los que entran quedan vendidos. "
+                       "Los pagos registrados no cambian.")
             base = pd.DataFrame([{"modelo": i.get("modelo") or "", "descripcion": i.get("descripcion") or "",
                                   "cantidad": int(_num(i.get("cantidad"), 1)),
                                   "precio_unitario": _num(i.get("precio_unitario")),
                                   "descuento_pct": _num(i.get("descuento_pct")),
-                                  **({"costo_unitario": _num(i.get("costo_unitario"))} if ve_costos else {}),
-                                  "quitar": False}
-                                 for i in items] + [dict(vacio), dict(vacio)])
-            clave_precio = f"vp_ei_p_{sel}_{vers}"
-            ei_hab = precios.habilitado(clave_precio)
+                                  **({"costo_unitario": _num(i.get("costo_unitario"))} if ve_costos else {})}
+                                 for i in items])
             editado = st.data_editor(
-                base, num_rows="fixed", use_container_width=True, hide_index=True, key=f"vp_ei_{sel}_{vers}",
-                disabled=[] if ei_hab else ["precio_unitario"],
+                base, num_rows="dynamic", use_container_width=True, hide_index=True, key=f"vp_ei_{sel}",
                 column_config={
                     "modelo": st.column_config.TextColumn("MODELO (vacío = S/N)"),
                     "descripcion": st.column_config.TextColumn("DESCRIPCIÓN"),
@@ -1706,50 +1265,28 @@ def tab_pedidos(sb, user):
                     "precio_unitario": st.column_config.NumberColumn("PRECIO UNIT.", min_value=0.0, format="$%.2f", default=0.0),
                     "descuento_pct": st.column_config.NumberColumn("DESC. %", min_value=0.0, max_value=100.0, format="%.1f", default=0.0),
                     **({"costo_unitario": st.column_config.NumberColumn("COSTO UNIT.", min_value=0.0, format="$%.2f", default=0.0)}
-                       if ve_costos else {}),
-                    "quitar": st.column_config.CheckboxColumn("🗑 QUITAR", default=False,
-                                                              help="Marca para quitar este renglón del pedido.")})
-            envio_sn = [i for i in items if not i.get("modelo") and "envi" in
-                        str(i.get("descripcion") or "").lower().replace("í", "i")]
-            if envio_sn and not _num(ped.get("envio")):
-                st.info("Este pedido tiene el envío como producto S/N. Para separarlo: marca **QUITAR** en ese "
-                        "renglón y pon el monto en **ENVÍO** (abajo).")
-            if not ei_hab:
-                st.caption("🔒 Precio bloqueado: los modelos toman el precio que ya tenían o el del inventario. Descuento "
-                           "libre hasta 10%. Para cambiar un precio, ponerle precio a un S/N o dar más descuento, marca "
-                           "la casilla de abajo.")
-            ei_hab, ei_aut = precios.control(clave_precio)
+                       if ve_costos else {})})
             tomar_inv = st.checkbox("Si cambio el modelo y no toco el precio/costo, tomarlos del inventario",
                                     value=True, key=f"vp_ei_inv_{sel}")
             acepta_v = st.checkbox("Aceptar modelos que ya figuran como vendidos", value=False, key=f"vp_ei_vend_{sel}")
-            envio_ed = st.number_input("ENVÍO ($, IVA incluido)", min_value=0.0, value=float(_num(ped.get("envio"))),
-                                       step=100.0, format="%.2f", key=f"vp_ei_envio_{sel}",
-                                       help="Se suma al total; no cuenta para utilidad ni comisión.")
             q_v2, q_c2 = codigos.pedir_identidad(sb, f"vp_ei_{sel}")
             if st.button("Guardar productos", type="primary", key=f"vp_ei_guardar_{sel}") \
                     and (quien2 := codigos.confirmar(sb, q_v2, q_c2)):
                 filas = []
                 for idx_f, fila in editado.iterrows():
                     d = {k: (None if pd.isna(v) else v) for k, v in fila.to_dict().items()}
-                    if d.pop("quitar", False):
-                        continue            # marcado para quitar
                     if not d.get("modelo") and not d.get("descripcion") and not _num(d.get("precio_unitario")):
                         continue            # renglón en blanco
                     d["orig"] = items[idx_f] if isinstance(idx_f, int) and idx_f < len(items) else None
                     filas.append(d)
                 try:
-                    mensaje, avisos, cambios_p = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2,
-                                                                    envio_ed, ei_hab, ei_aut)
+                    mensaje, avisos = editar_items_pedido(sb, ped, filas, tomar_inv, acepta_v, quien2)
                 except ValueError as ex:
                     st.error(f"{ex}")
                 except Exception as ex:
                     st.error(f"No se pudo guardar: {ex}")
                 else:
                     codigos.registrar(sb, quien2, "Editó productos", "pedido", sel, mensaje)
-                    a = precios.registrar(sb, f"Pedido {sel}", cambios_p, ei_aut, quien2)
-                    if a:
-                        avisos = list(avisos) + [a]
-                    st.session_state[f"vp_ei_v_{sel}"] = vers + 1      # el editor vuelve a leer el pedido guardado
                     st.session_state["vp_msg"] = mensaje
                     st.session_state["vp_avisos"] = avisos
                     st.rerun()
@@ -1831,7 +1368,6 @@ def tab_comisiones(sb, user):
     if vend:
         q = q.in_("vendedor", vend)
     rows = q.range(0, 4999).execute().data
-    rows = [r for r in rows if "numero_pedido" not in r or int(r.get("numero_pedido") or 0) >= pedido_desde()]
     if not rows:
         st.info("No hay comisiones para ese mes.")
         return
@@ -1875,7 +1411,7 @@ def tab_comisiones(sb, user):
             "status": "STATUS", "n_vendedores": "N° VENDEDORES",
             "subtotal_asignado": "SUBTOTAL ASIGNADO", "comision": "COMISIÓN"})
         st.dataframe(det, use_container_width=True, hide_index=True)
-        descargar(st, "Descargar detalle (CSV)", det.to_csv(index=False).encode("utf-8-sig"),
+        st.download_button("Descargar detalle (CSV)", det.to_csv(index=False).encode("utf-8-sig"),
                            file_name=f"comisiones_{anio}_{mes:02d}.csv", mime="text/csv")
 
 
@@ -1883,23 +1419,12 @@ def tab_comisiones(sb, user):
 # PESTAÑA: RESUMEN MENSUAL (ventas sin IVA, costos y utilidad por mes)
 # ----------------------------------------------------------------------
 def resumen_mensual(sb, anio, solo_pagados=False):
-    """Resumen por mes (con memoria de 2 min; se borra sola al guardar cualquier cambio)."""
-    return _resumen_mensual_mem(sb, anio, solo_pagados)
-
-
-@guardar_en_memoria(ttl=120)
-def _resumen_mensual_mem(_sb, anio, solo_pagados):
-    return _resumen_mensual(_sb, anio, solo_pagados)
-
-
-def _resumen_mensual(sb, anio, solo_pagados=False):
     """Devuelve un DataFrame con una fila por mes (1-12) del año, sin pedidos cancelados."""
     filas, desde = [], 0
     while True:
         r = (sb.table("pedidos")
              .select("numero_pedido,mes,subtotal,costo_total,utilidad,status,estado_pedido")
-             .eq("anio", anio).gte("numero_pedido", pedido_desde())
-             .order("numero_pedido").range(desde, desde + 999).execute().data)
+             .eq("anio", anio).order("numero_pedido").range(desde, desde + 999).execute().data)
         filas += r
         if len(r) < 1000:
             break
@@ -1966,7 +1491,7 @@ def tab_resumen(sb, user):
 
     grafica = df.assign(MES=[MESES[m - 1][:3] for m in df["mes"]]).set_index("MES")[["ventas", "costos", "utilidad"]]
     st.bar_chart(grafica.rename(columns={"ventas": "Ventas sin IVA", "costos": "Costos", "utilidad": "Utilidad"}))
-    descargar(st, "Descargar resumen (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
+    st.download_button("Descargar resumen (CSV)", tabla.to_csv(index=False).encode("utf-8-sig"),
                        file_name=f"resumen_mensual_{anio}.csv", mime="text/csv")
 
 
@@ -1989,13 +1514,6 @@ def render_ventas(sb, user):
     except Exception as ex:
         st.caption(f"Cotizaciones no disponible: {ex}")
     try:
-        from remisiones import ROLES_REMISIONES, tab_remisiones
-        if user["role"] in ROLES_REMISIONES:
-            pos = [n for n, _ in secciones].index("Pedidos") + 1
-            secciones.insert(pos, ("Remisiones", tab_remisiones))
-    except Exception as ex:
-        st.caption(f"Remisiones no disponible: {ex}")
-    try:
         from facturar import ROLES_FACTURAR, tab_por_facturar
         if user["role"] in ROLES_FACTURAR:
             secciones.insert(secciones.index(("Pedidos", tab_pedidos)) + 1, ("Por facturar", tab_por_facturar))
@@ -2005,12 +1523,8 @@ def render_ventas(sb, user):
         secciones.append(("Resumen mensual", tab_resumen))
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))
-    if user["role"] in roles("codigos"):
+    if user["role"] == "Administrador":
         secciones.append(("Códigos", codigos.tab_codigos))
-    # Solo se carga la sección elegida (con pestañas se cargaban todas en cada clic)
-    from navegacion import selector
-    ir = st.session_state.pop("nav_ventas_ir", None)        # p. ej. «Ver remisión» desde un pedido
-    if ir in [n for n, _ in secciones]:
-        st.session_state["nav_ventas"] = st.session_state["nav_ventas__ultimo"] = ir
-    elegida = selector([n for n, _ in secciones], "nav_ventas", "Sección de ventas")
-    dict(secciones)[elegida](sb, user)
+    for tab, (_, funcion) in zip(st.tabs([n for n, _ in secciones]), secciones):
+        with tab:
+            funcion(sb, user)
