@@ -14,6 +14,8 @@ VEND = "Vendedor"
 LOG = "Logística"          # como Vendedor: Consultar / Buscar y Ventas (Nuevo pedido, Cotizaciones, Pedidos, Remisiones)
 INV2 = "Inventario II"     # los mismos permisos que Inventario
 
+CLAU = "Claudia"           # los mismos permisos que Administrador
+
 PERMISOS = {
     # --- Inventario / app principal ---
     "alta_manual":       (DIOS, ADMIN, CONTA, INV, INV2),            # pestaña «Alta Manual»
@@ -38,6 +40,8 @@ PERMISOS = {
     "avisos_precio":     (DIOS, ADMIN, CONTA),                 # aviso de cambios de precio autorizados
 }
 
+# El rol «Claudia» tiene todo lo que tiene Administrador
+PERMISOS = {k: (v + (CLAU,) if ADMIN in v and CLAU not in v else v) for k, v in PERMISOS.items()}
 
 def roles(permiso):
     """Tupla de roles que tienen ese permiso."""
