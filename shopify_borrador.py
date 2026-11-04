@@ -74,6 +74,26 @@ def _descripcion_a_html(texto):
     return "".join("<p>" + html.escape(p.strip()).replace("\n", "<br>") + "</p>" for p in parrafos if p.strip())
 
 
+def descripcion_con_cedula(pdata):
+    """Lo que va en la descripción de Shopify: DESCRIPCIÓN y, si hay, la CÉDULA CURATORIAL abajo (renglón en blanco
+    de por medio). En el inventario siguen siendo dos campos separados."""
+    desc = str(pdata.get("DESCRIPCION", "") or "").strip()
+    cedula = str(pdata.get("CEDULA_CURATORIAL", "") or "").strip()
+    return "\n\n".join(t for t in (desc, cedula) if t)
+
+
+def quitar_cedula(texto, pdata):
+    """Texto de la descripción de Shopify SIN la cédula curatorial del final (si la trae). Así la sincronización
+    compara solo la descripción y nunca mete la cédula en el campo DESCRIPCIÓN del inventario."""
+    texto = str(texto or "")
+    cedula = str(pdata.get("CEDULA_CURATORIAL", "") or "").strip()
+    if not cedula or not texto.strip():
+        return texto
+    patron = r"\s*" + r"\s+".join(re.escape(p) for p in cedula.split()) + r"\s*$"
+    m = re.search(patron, texto)
+    return texto[:m.start()].rstrip() if m else texto
+
+
 def _esta_vendido(pdata):
     v = str(pdata.get("DISP", pdata.get("DISPONIBILIDAD", ""))).strip().lower()
     return v in ("v", "r")      # reservado por una cotización = agotado
@@ -241,7 +261,7 @@ def crear_borrador_shopify(modelo, pdata):
         cat_num = str(pdata.get("CATEGORIA", "")).strip()[:1]
         producto = {
             "title": nombre,
-            "descriptionHtml": _descripcion_a_html(pdata.get("DESCRIPCION", "")),
+            "descriptionHtml": _descripcion_a_html(descripcion_con_cedula(pdata)),
             "status": "DRAFT",
         }
         if cat_num in TIPO_POR_CATEGORIA:
@@ -376,7 +396,7 @@ def actualizar_producto_shopify(modelo, pdata, enviar_descripcion=None, enviar_n
             cambios["title"] = nombre
         enviar = ENVIAR_DESCRIPCION_A_SHOPIFY if enviar_descripcion is None else enviar_descripcion
         if enviar:
-            desc = _descripcion_a_html(pdata.get("DESCRIPCION", ""))
+            desc = _descripcion_a_html(descripcion_con_cedula(pdata))
             if desc:
                 cambios["descriptionHtml"] = desc
         cat_num = str(pdata.get("CATEGORIA", "")).strip()[:1]

@@ -129,6 +129,93 @@ def ultimos_productos(desde, n):
 
 
 
+@_guardar_en_memoria(ttl=300)
+def _modelos_sin_precio():
+   """Modelos DISPONIBLES o RESERVADOS cuyo REDONDEO SHOWROOM está en 0 o vacío, del más reciente al más viejo.
+   El precio vive dentro de datos_json (texto), así que se revisan todas las fichas; el resultado se guarda 5 min
+   y se borra solo al guardar cualquier ficha (así la que ya tiene precio sale del filtro)."""
+   modelos, offset = [], 0
+   while True:
+       filas = (supabase.table("productos").select("MODELO,datos_json").order("MODELO")
+                .range(offset, offset + 999).execute().data)
+       for f in filas:
+           raw = f.get("datos_json")
+           try:
+               d = raw if isinstance(raw, dict) else json.loads(raw or "{}")
+           except (TypeError, ValueError):
+               d = {}
+           if not isinstance(d, dict):
+               d = {}
+           disp = str(d.get("DISP", d.get("DISPONIBILIDAD", "")) or "").strip().lower()
+           if disp == "v":
+               continue                                   # vendido: no hace falta precio
+           if to_float(d.get("REDONDEO_SHOWROOM", 0)) > 0:
+               continue
+           m = str(f.get("MODELO", "") or "").strip()
+           base = m.split(".")[0]
+           modelos.append((int(base) if base.isdigit() else -1, m))
+       if len(filas) < 1000:
+           break
+       offset += 1000
+   modelos.sort(reverse=True)
+   return [m for _, m in modelos]
+
+
+def productos_sin_precio(desde, n):
+   """Página de productos sin redondeo showroom (disponibles / reservados): devuelve (lista, total)."""
+   modelos = _modelos_sin_precio()
+   pagina = modelos[desde:desde + n]
+   if not pagina:
+       return [], len(modelos)
+   resp = supabase.table("productos").select("*").in_("MODELO", pagina).execute()
+   orden = {m: i for i, m in enumerate(pagina)}
+   datos = sorted(resp.data or [], key=lambda r: orden.get(str(r.get("MODELO", "")).strip(), len(orden)))
+   return datos, len(modelos)
+
+
+
+def ventas_de_modelos(modelos):
+   """{modelo: texto} con el precio al que se vendió cada modelo (ya con descuento), para la etiqueta roja de VENDIDO.
+   Toma el pedido activo (no cancelado) más reciente que lo tiene; si no hay, la venta de Shopify (sin precio por pieza).
+   Una sola consulta por tabla para toda la página. Si algo falla devuelve lo que pudo (la etiqueta queda «VENDIDO»)."""
+   modelos = [str(m).strip() for m in modelos if str(m or "").strip()]
+   out = {}
+   if not modelos:
+       return out
+   try:
+       its = (supabase.table("pedido_items").select("numero_pedido,modelo,cantidad,total_linea,descuento_pct")
+              .in_("modelo", modelos).execute().data or [])
+       nums = sorted({i["numero_pedido"] for i in its})
+       activos = set()
+       if nums:
+           activos = {p["numero_pedido"] for p in (supabase.table("pedidos").select("numero_pedido,status,estado_pedido")
+                                                   .in_("numero_pedido", nums).execute().data or [])
+                      if p.get("status") != "Cancelado" and p.get("estado_pedido") != "Cancelado"}
+       for i in sorted(its, key=lambda x: x["numero_pedido"]):           # el más reciente gana
+           if i["numero_pedido"] not in activos:
+               continue
+           cant = max(int(to_float(i.get("cantidad"), 1.0)), 1)
+           precio = to_float(i.get("total_linea")) / cant
+           desc = to_float(i.get("descuento_pct"))
+           extra = f"pedido {i['numero_pedido']}" + (f", {desc:g}% desc." if desc else "")
+           out[str(i["modelo"]).strip()] = f"${precio:,.2f} ({extra})"
+   except Exception:
+       pass
+   faltan = [m for m in modelos if m not in out]
+   if faltan:
+       try:
+           ords = (supabase.table("shopify_ordenes").select("nombre,marcados").eq("cancelada", False)
+                   .order("creado", desc=True).limit(500).execute().data or [])
+           for m in faltan:
+               o = next((o for o in ords if m in (o.get("marcados") or [])), None)
+               if o:
+                   out[m] = f"en Shopify ({o.get('nombre')})"
+       except Exception:
+           pass
+   return out
+
+
+
 # --- AUTENTICACIÓN Y ROLES ---
 # Los usuarios y contraseñas ya no están en el código: viven en los secretos de Streamlit
 # (.streamlit/secrets.toml en tu computadora; Settings > Secrets en Streamlit Cloud), sección [usuarios.<nombre>].
@@ -770,8 +857,11 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() in ("v", "r")
                with st.spinner("Actualizando Shopify..."):
                    # El nombre y la descripción solo se mandan a Shopify si los cambiaste en esta ficha (y no están vacíos)
-                   desc_cambio = (descripcion.strip() != "" and
-                                  " ".join(descripcion.split()) != " ".join(str(datos_previos.get("DESCRIPCION", "") or "").split()))
+                   # Descripción de Shopify = DESCRIPCIÓN + CÉDULA CURATORIAL: se manda si cambió cualquiera de las dos
+                   from shopify_borrador import descripcion_con_cedula as _desc_ced
+                   _desc_nueva = _desc_ced(datos_guardar)
+                   desc_cambio = (_desc_nueva != "" and
+                                  " ".join(_desc_nueva.split()) != " ".join(_desc_ced(datos_previos).split()))
                    nombre_cambio = (nombre.strip() != "" and
                                     " ".join(nombre.split()) != " ".join(str(datos_previos.get("NOMBRE", "") or "").split()))
                    precio_cambio = (num(redondeo_sh) > 0 and
@@ -1005,8 +1095,17 @@ if tab1 is not None:
           rango_hasta = st.text_input("Hasta modelo", key="rango_hasta").strip()
 
 
+      solo_sin_precio = False
+      if puede(user, "sin_precio"):
+          solo_sin_precio = st.checkbox(
+              "Solo sin redondeo showroom (disponibles y reservados)", key="filtro_sin_precio",
+              help="Muestra solo los productos disponibles o reservados con el REDONDEO SHOWROOM en 0 o vacío. "
+                   "Al ponerle precio y guardar la ficha, el producto sale de esta lista.")
+
       modo_rango = rango_desde.isdigit() and rango_hasta.isdigit()
       busqueda = f"{rango_desde} a {rango_hasta}" if modo_rango else busqueda_raw.strip()
+      if solo_sin_precio:
+          busqueda = "__sin_precio__"         # la búsqueda de texto no se usa con esta casilla
   
       mostrar_ultimos = not busqueda
       if busqueda or mostrar_ultimos:
@@ -1023,7 +1122,7 @@ if tab1 is not None:
 
           with st.spinner("Consultando inventario..."):
               # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
-              if mostrar_ultimos:
+              if mostrar_ultimos or solo_sin_precio:
                   query = None
               elif modo_rango:
                   limite_sup = str(int(rango_hasta) + 1)
@@ -1035,7 +1134,14 @@ if tab1 is not None:
                   query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
           
               resp, ultimo_error = None, None
-              if mostrar_ultimos:
+              if solo_sin_precio:
+                  productos, total_coincidencias = [], 0
+                  try:
+                      productos, total_coincidencias = productos_sin_precio(desde, tamano_pagina)
+                  except Exception as e:
+                      st.warning(f"No se pudo armar la lista de productos sin redondeo showroom (la base tardó "
+                                 f"demasiado). Recarga en unos segundos. Detalle: {e}")
+              elif mostrar_ultimos:
                   productos, total_coincidencias = [], 0
                   for intento in range(2):
                       try:
@@ -1069,7 +1175,12 @@ if tab1 is not None:
           
               col_info, col_pag = st.columns([2, 1])
               with col_info:
-                  if mostrar_ultimos:
+                  if solo_sin_precio:
+                      st.subheader(f"Sin redondeo showroom ({total_coincidencias})")
+                      st.caption(f"Disponibles y reservados con el REDONDEO SHOWROOM en 0, del más reciente al más antiguo · "
+                                 f"productos {desde + 1} a {min(hasta + 1, total_coincidencias)} (Página {pagina + 1} de "
+                                 f"{total_paginas}). Entra a «Editar Ficha Completa», ponle el precio y guarda.")
+                  elif mostrar_ultimos:
                       st.subheader("🆕 Últimos productos agregados")
                       st.caption(f"Del más reciente al más antiguo · productos {desde + 1} a {min(hasta + 1, total_coincidencias)} "
                                  f"(Página {pagina + 1} de {total_paginas}). Escribe un modelo o palabra clave arriba para buscar.")
@@ -1092,6 +1203,17 @@ if tab1 is not None:
               st.divider()
               cols_por_fila = 3
               cols = st.columns(cols_por_fila)
+              # Precio al que se vendió (con descuento) de los VENDIDOS de esta página: una consulta para todos
+              _vendidos_pag = []
+              for _it in productos:
+                  _raw = _it.get("datos_json", "{}")
+                  try:
+                      _d = json.loads(_raw) if isinstance(_raw, str) else (_raw if isinstance(_raw, dict) else {})
+                  except (TypeError, ValueError):
+                      _d = {}
+                  if str((_d or {}).get("DISP", (_d or {}).get("DISPONIBILIDAD", ""))).strip().lower() == "v":
+                      _vendidos_pag.append(_it.get("MODELO"))
+              _ventas_pag = ventas_de_modelos(_vendidos_pag)
           
               for idx, item in enumerate(productos):
                   mod_p = item.get("MODELO")
@@ -1132,7 +1254,8 @@ if tab1 is not None:
                                   _quien_res = "por una cotización"
                               st.warning(f"Estado: RESERVADO {_quien_res}")
                           elif is_vendido:
-                              st.error("Estado: VENDIDO")
+                              _venta = _ventas_pag.get(str(mod_p).strip())
+                              st.error("Estado: VENDIDO" + (f" · {_venta}" if _venta else ""))
                           else:
                               st.success("Estado: DISPONIBLE")
                           
@@ -1195,6 +1318,8 @@ if tab1 is not None:
                       if st.button("Siguiente ", disabled=(pagina >= total_paginas - 1), key="btn_next_bot", use_container_width=True):
                           st.session_state["pagina_actual"] += 1
                           st.rerun()
+          elif solo_sin_precio:
+              st.success("No hay productos disponibles ni reservados sin redondeo showroom.")
           else:
               st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
       else:

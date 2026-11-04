@@ -15,6 +15,7 @@ import re
 
 from sync_shopify import _num, _parse  # noqa: F401  (utilidades compartidas)
 from shopify_descripciones import html_a_texto
+from shopify_borrador import quitar_cedula
 
 CAMPOS = ("nombre", "desc", "precio")
 ETIQUETA = {"nombre": "nombre", "desc": "descripción", "precio": "precio"}
@@ -201,7 +202,9 @@ def procesar(sb, gql, empujar, shopify, progreso=None):
             resumen["revisados"] += 1
             try:
                 d = _parse(inventario[sku].get("datos_json"))
-                inv, sh, snap = valores_inventario(d), shopify[sku], snaps.get(sku)
+                # En Shopify la descripción lleva la cédula curatorial al final: se compara sin ella
+                sh = dict(shopify[sku], desc=quitar_cedula(shopify[sku]["desc"], d))
+                inv, snap = valores_inventario(d), snaps.get(sku)
                 acciones = decidir(snap, inv, sh, (snap or {}).get("conflicto"))
                 if acciones:
                     r = aplicar(sb, empujar, sku, d, snap, inv, sh, acciones)

@@ -16,7 +16,7 @@ from html.parser import HTMLParser
 import pandas as pd
 import streamlit as st
 
-from shopify_borrador import _gql
+from shopify_borrador import _gql, quitar_cedula
 from navegacion import descargar
 
 Q_PRODUCTOS = """
@@ -131,6 +131,8 @@ def armar_plan(supabase, desde_shopify):
             for k, (campo_inv, clave_sh, _) in CAMPOS.items():
                 inv = str(d.get(campo_inv, "") or "")
                 sh = desde_shopify[modelo][clave_sh]
+                if k == "desc":
+                    sh = quitar_cedula(sh, d)        # la cédula curatorial del final no va a DESCRIPCIÓN
                 fila[k] = {"estado": _estado(inv, sh), "inventario": inv, "shopify": sh}
             plan.append(fila)
     return plan, len(skus) - len(encontrados)
