@@ -1,17 +1,19 @@
 """
 Caudal: cuánto dinero tiene (o puso de su bolsa) cada persona, en efectivo y en transferencia.
 
-Cuentas: Caja (la tienda), Ernesto, Viriato, Claudia y Mary — cada una con efectivo y transferencia.
+Cuentas: Caja (efectivo de la tienda), Ensalada de Ideas (lo que entra al banco de la tienda: transferencias, TPV,
+depósitos) y Ernesto, Viriato, Claudia y Mary — cada persona con efectivo y transferencia.
 Verde = saldo a favor. Rojo = puso de su bolsa y la tienda le debe.
 
 De dónde salen los movimientos:
   * VENTAS (se calculan solas de los pagos de los pedidos, sin los cancelados):
       - forma de pago «Efectivo» → Caja · efectivo
       - lo demás (depósito, transferencia, tarjeta) → transferencia de la persona del banco:
-        BANCOMER CLAU → Claudia · BANCOMER VIRIATO → Viriato · BANCOMER ERNESTO → Ernesto · otro banco → Caja
+        BANCOMER CLAU → Claudia · BANCOMER VIRIATO → Viriato · BANCOMER ERNESTO → Ernesto ·
+        otro banco (TPV BBVA, Bancomer / depósito Ensalada de Ideas…) → Ensalada de Ideas
     Si un pedido se cancela, sus cobros dejan de contar solos. Se corrigen desde el pedido.
-  * COMPRAS y RESTAUROS (al guardar la ficha): restan a «Quién pagó», en efectivo o transferencia según la forma
-    de pago. Solo cuenta lo que se carga o cambia desde el encendido (si una compra vieja pasa de $5,000 a $6,000,
+  * COMPRAS, RESTAUROS, COSTO FINANCIERO, FLETES y OTROS COSTOS (al guardar la ficha): restan a «Quién pagó», en
+    efectivo o transferencia según la forma de pago. Solo cuenta lo que se carga o cambia desde el encendido (si una compra vieja pasa de $5,000 a $6,000,
     se resta $1,000). «Ponerse al día» carga de una vez los costos completos de todas las fichas.
   * MANUALES: traspasos (Caja → Ernesto, o efectivo → transferencia), entradas y gastos.
 Los movimientos no se borran: se anulan (quién, cuándo y por qué).
@@ -31,8 +33,21 @@ import codigos
 from permisos import roles as _roles
 
 ROLES_CAUDAL = _roles("caudal")
-CUENTAS = ("Caja", "Ernesto", "Viriato", "Claudia", "Mary")
+CAJA, ENSALADA = "Caja", "Ensalada de Ideas"
+CUENTAS = (CAJA, ENSALADA, "Ernesto", "Viriato", "Claudia", "Mary")
 MEDIOS = ("efectivo", "transferencia")
+# Caja es solo efectivo y Ensalada de Ideas solo banco; las personas tienen los dos
+MEDIOS_DE = {CAJA: ("efectivo",), ENSALADA: ("transferencia",)}
+
+
+def normalizar(cuenta, medio):
+    """(cuenta, medio) con las reglas de hoy: lo que antes era «Caja · transferencia» es «Ensalada de Ideas»
+    (también los movimientos viejos que quedaron guardados así), y Ensalada de Ideas siempre es transferencia."""
+    if cuenta == CAJA and medio == "transferencia":
+        return ENSALADA, "transferencia"
+    if cuenta == ENSALADA:
+        return ENSALADA, "transferencia"
+    return cuenta, medio
 VERDE, ROJO, AZUL, GRIS = "#5fcf8a", "#f08a78", "#9fb4d8", "#9a9284"
 
 CAUDAL_SQL = """
@@ -89,12 +104,15 @@ def dinero(n):
 # Reglas: a qué cuenta va cada cosa
 # ----------------------------------------------------------------------
 def cuenta_de_quien(qp):
-    """«2 - ERNESTO» → Ernesto (lo de «Quién pagó» en la ficha). Sin reconocer → Caja."""
+    """«2 - ERNESTO» → Ernesto (lo de «Quién pagó» en la ficha). Sin reconocer → Caja.
+    (Caja pagando por transferencia queda como Ensalada de Ideas: ver normalizar.)"""
     t = str(qp or "").upper()
+    if "ENSALADA" in t:
+        return ENSALADA
     for c in CUENTAS:
         if c.upper() in t:
             return c
-    return "Caja"
+    return CAJA
 
 
 def medio_de_forma(fp):
@@ -109,13 +127,13 @@ def cuenta_de_banco(banco):
         return "Viriato"
     if "ERNESTO" in t:
         return "Ernesto"
-    return "Caja"
+    return ENSALADA                      # TPV BBVA, Bancomer / depósito Ensalada de Ideas y cualquier otro banco
 
 
 def cuenta_de_venta(forma_pago, banco_caja):
     """(cuenta, medio) de un cobro de pedido."""
     if str(forma_pago or "").strip().lower().startswith("efectivo"):
-        return "Caja", "efectivo"
+        return CAJA, "efectivo"
     return cuenta_de_banco(banco_caja), "transferencia"
 
 
@@ -145,6 +163,8 @@ def _insertar(sb, filas):
 
 def movimiento_manual(sb, tipo, monto, concepto, usuario, fecha=None, de=None, a=None):
     """tipo: 'traspaso' (de → a), 'entrada' (a), 'gasto' (de). de / a = (cuenta, medio)."""
+    de = normalizar(*de) if de else None
+    a = normalizar(*a) if a else None
     monto = round(_num(monto), 2)
     if monto <= 0:
         raise ValueError("El monto debe ser mayor que 0.")
@@ -190,6 +210,14 @@ def anular(sb, mov, motivo, usuario):
 # ----------------------------------------------------------------------
 # Ficha → compras y restauros
 # ----------------------------------------------------------------------
+# (tipo en Caudal, lista en la ficha, monto suelto de fichas anteriores, nombre)
+GASTOS_FICHA = (("financiero", "COSTOS_FINANCIEROS", "COSTO_FINANCIERO", "Costo financiero"),
+                ("flete", "FLETES", "COSTO_FLETES", "Flete"),
+                ("otro", "OTROS_COSTOS_DETALLE", "OTROS_COSTOS", "Otro costo"))
+NOMBRE_TIPO = {"compra": "Compra", "restauro": "Restauro", "financiero": "Costo financiero", "flete": "Flete",
+               "otro": "Otro costo"}
+
+
 def _bloques(datos):
     """[(clave, tipo, cuenta, medio, costo, texto)] de las compras y restauros de una ficha."""
     datos = datos or {}
@@ -199,15 +227,24 @@ def _bloques(datos):
         compras = [{"prov": datos.get("PROVEEDOR_COMPRA"), "fp": datos.get("FORMA_PAGO_COMPRA"),
                     "qp": datos.get("QUIEN_PAGO_COMPRA"), "costo": datos.get("COSTO_ADQUISICION")}]
     for n, c in enumerate(compras):
-        out.append((f"compra:{n}", "compra", cuenta_de_quien(c.get("qp")), medio_de_forma(c.get("fp")),
+        out.append((f"compra:{n}", "compra", *normalizar(cuenta_de_quien(c.get("qp")), medio_de_forma(c.get("fp"))),
                     round(_num(c.get("costo")), 2), f"Compra #{n + 1}" + (f" · {c.get('prov')}" if c.get("prov") else "")))
     rest = datos.get("RESTAURADORES") or []
     for n, r in enumerate(rest):
         costo = r.get("costo")
         if costo in (None, "") and n == 0 and not any("costo" in x for x in rest):
             costo = datos.get("COSTO_RESTAURO")
-        out.append((f"restauro:{n}", "restauro", cuenta_de_quien(r.get("qp")), medio_de_forma(r.get("fp")),
+        out.append((f"restauro:{n}", "restauro", *normalizar(cuenta_de_quien(r.get("qp")), medio_de_forma(r.get("fp"))),
                     round(_num(costo), 2), f"Restaurador #{n + 1}" + (f" · {r.get('prov')}" if r.get("prov") else "")))
+    # Costo financiero, fletes y otros costos: igual que restauro. Fichas anteriores (solo el monto suelto, sin
+    # quién pagó) cuentan como un bloque, para que al pasar a bloques no se registre como un costo nuevo.
+    for tipo, lista_k, total_k, nombre in GASTOS_FICHA:
+        lista = datos.get(lista_k) or []
+        if not lista and _num(datos.get(total_k)):
+            lista = [{"costo": datos.get(total_k)}]
+        for n, b in enumerate(lista):
+            out.append((f"{tipo}:{n}", tipo, *normalizar(cuenta_de_quien(b.get("qp")), medio_de_forma(b.get("fp"))),
+                        round(_num(b.get("costo")), 2), f"{nombre} #{n + 1}" + (f" · {b.get('prov')}" if b.get("prov") else "")))
     return out
 
 
@@ -220,7 +257,7 @@ def _cargado(sb, modelo):
         if f.get("anulado"):
             continue
         d = out.setdefault(f["referencia"], {})
-        k = (f["cuenta"], f["medio"])
+        k = normalizar(f["cuenta"], f["medio"])
         d[k] = round(d.get(k, 0.0) + _num(f["monto"]), 2)
     return out
 
@@ -256,7 +293,7 @@ def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
         tipo = clave.split(":")[0]
         texto = nuevo_b[5] if nuevo_b else (antes[clave][5] if clave in antes else clave)
         base = {"fecha": hoy, "tipo": tipo, "origen": "ficha", "referencia": ref, "usuario": usuario,
-                "concepto": f"{'Compra' if tipo == 'compra' else 'Restauro'} · Mod {modelo}",
+                "concepto": f"{NOMBRE_TIPO.get(tipo, tipo.capitalize())} · Mod {modelo}",
                 "detalle": " · ".join(x for x in (texto, nombre) if x)}
         # Lo ya restado que quedó en otra cuenta (cambió quién pagó o la forma de pago) se devuelve allá
         for (cta, med), suma in ya.items():
@@ -392,6 +429,8 @@ def explicar_pedido(sb, numero, inicio):
 
 def movimientos(sb, inicio):
     guardados = _todas(lambda: sb.table("caudal_movimientos").select("*").gte("fecha", inicio.isoformat()).order("id"))
+    for m in guardados:
+        m["cuenta"], m["medio"] = normalizar(m.get("cuenta"), m.get("medio"))
     todos = guardados + _ventas(sb, inicio)
     todos.sort(key=lambda m: (str(m.get("fecha") or ""), str(m.get("creado") or "")), reverse=True)
     return todos
@@ -418,13 +457,16 @@ def _tarjetas(s):
     for col, c in zip(cols, CUENTAS):
         ef, tr = s[c]["efectivo"], s[c]["transferencia"]
         tot = ef + tr
+        medios = MEDIOS_DE.get(c, MEDIOS)
+        fila_ef = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Efectivo</span>
+  <span style="color:{_color(ef)};font-variant-numeric:tabular-nums">{dinero(ef)}</span></div>""" if "efectivo" in medios else ""
+        fila_tr = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Transferencia</span>
+  <span style="color:{_color(tr)};font-variant-numeric:tabular-nums">{dinero(tr)}</span></div>""" if "transferencia" in medios else ""
         col.markdown(f"""
 <div style="border:1px solid rgba(160,150,135,.35);border-radius:12px;padding:14px 16px;">
  <div style="font-size:1.35rem;font-weight:600;margin-bottom:8px;">{c}</div>
- <div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Efectivo</span>
-  <span style="color:{_color(ef)};font-variant-numeric:tabular-nums">{dinero(ef)}</span></div>
- <div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Transferencia</span>
-  <span style="color:{_color(tr)};font-variant-numeric:tabular-nums">{dinero(tr)}</span></div>
+ {fila_ef}
+ {fila_tr}
  <div style="border-top:1px solid rgba(160,150,135,.35);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;align-items:baseline;">
   <span style="opacity:.75;font-size:.8rem;letter-spacing:1px">TOTAL</span>
   <span style="color:{_color(tot)};font-size:1.3rem;font-weight:600;font-variant-numeric:tabular-nums">{dinero(tot)}</span></div>
@@ -473,7 +515,7 @@ def _tabla(movs, limite=300):
 
 
 def _opciones_cuenta():
-    return [f"{c} · {m}" for c in CUENTAS for m in MEDIOS]
+    return [f"{c} · {m}" for c in CUENTAS for m in MEDIOS_DE.get(c, MEDIOS)]
 
 
 def _partir(op):
@@ -483,7 +525,7 @@ def _partir(op):
 
 def _encender(sb):
     st.info("Caudal todavía no está encendido. Al encenderlo, empieza a contar desde la fecha que elijas: las "
-            "ventas desde esa fecha, y las compras y restauros que se carguen o cambien en las fichas desde ahora.")
+            "ventas desde esa fecha, y las compras, restauros y demás costos que se carguen o cambien en las fichas desde ahora.")
     f = st.date_input("Contar desde", value=_hoy(), key="cd_enc_fecha", format="DD/MM/YYYY")
     q_v, q_c = codigos.pedir_identidad(sb, "cd_enc_id")
     if st.button("Encender Caudal", type="primary", key="cd_enc_ok"):
@@ -583,7 +625,9 @@ def render(sb, user):
             a = st.selectbox("A", ops, index=None, key="cd_n_a", placeholder="Elegir cuenta…")
         monto = st.number_input("MONTO ($)", min_value=0.0, step=500.0, format="%.2f", key="cd_n_monto")
         concepto = st.text_input("CONCEPTO", key="cd_n_concepto",
-                                 placeholder="Para compras de la semana" if tipo_n == "Traspaso" else "")
+                                 placeholder={"Traspaso": "Para compras de la semana",
+                                              "Gasto": "Botella de agua – supermercado",
+                                              "Entrada": "Préstamo, devolución…"}.get(tipo_n, ""))
         fecha = st.date_input("FECHA", value=_hoy(), key="cd_n_fecha", format="DD/MM/YYYY")
         if st.button(f"Registrar {tipo_n.lower()}", type="primary", key="cd_n_ok", use_container_width=True):
             quien = codigos.confirmar(sb, q_v, q_c)
@@ -597,17 +641,20 @@ def render(sb, user):
                     st.rerun()
                 except Exception as ex:
                     st.error(str(ex))
-        st.caption("Traspaso: sale de una cuenta y entra en otra (también efectivo → transferencia de la misma "
-                   "persona al depositar).")
+        st.caption("Gasto: dinero que sale de una cuenta (p. ej. $100 de Caja · efectivo en una botella de agua). "
+                   "Entrada: dinero que entra a una cuenta. Traspaso: sale de una cuenta y entra en otra (p. ej. "
+                   "depositar el efectivo de Caja en Ensalada de Ideas).")
 
     st.divider()
     with st.expander("Cómo se arma cada cuenta"):
         st.markdown("- **Ventas** (solas, de los pagos de los pedidos): «Efectivo» → Caja · efectivo. Depósito o "
                     "transferencia → según el banco: BANCOMER CLAU → Claudia, BANCOMER VIRIATO → Viriato, BANCOMER "
-                    "ERNESTO → Ernesto; los demás (TPV BBVA, CAJA, Ensalada de Ideas…) → Caja · transferencia. "
+                    "ERNESTO → Ernesto; los demás (TPV BBVA, Bancomer Ensalada de Ideas…) → Ensalada de Ideas. "
                     "Si el pedido se cancela, deja de contar.\n"
-                    "- **Compras y restauros** (al guardar la ficha): restan a «Quién pagó», en efectivo o "
-                    "transferencia según la forma de pago. Solo cuenta lo que se carga o cambia desde el encendido.\n"
+                    "- **Compras, restauros, costo financiero, fletes y otros costos** (al guardar la ficha): "
+                    "restan a «Quién pagó», en efectivo o "
+                    "transferencia según la forma de pago (Caja pagando por transferencia = Ensalada de Ideas). Solo "
+                    "cuenta lo que se carga o cambia desde el encendido.\n"
                     "- **Manuales**: traspasos, entradas y gastos de este panel.")
     with st.expander("¿Falta una venta? Revisar un pedido"):
         n = st.text_input("N° de pedido", key="cd_exp_num")
@@ -616,7 +663,7 @@ def render(sb, user):
                 st.write(linea)
     with st.expander("Fecha de inicio y ponerse al día"):
         st.caption("Cambiar la fecha de inicio cambia desde cuándo se cuentan ventas y movimientos. «Ponerse al "
-                   "día» carga el costo completo de las compras y restauros de TODAS las fichas (lo ya cargado no se "
+                   "día» carga el costo completo de las compras, restauros y demás costos de TODAS las fichas (lo ya cargado no se "
                    "repite): úsalo cuando termines de capturar los costos.")
         c1, c2 = st.columns(2)
         nueva = c1.date_input("Contar desde", value=inicio, key="cd_ini", format="DD/MM/YYYY")

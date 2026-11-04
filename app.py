@@ -528,7 +528,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    st.divider()
    st.header("3. SECCIÓN COMPRA")
    pago_opts = ["1 - EFECTIVO", "2 - TRANSFERENCIA"]
-   pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY"]
+   pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY", "6 - ENSALADA DE IDEAS"]
 
 
    def _idx(opciones, valor):
@@ -632,29 +632,74 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        })
    _botones_bloques(num_rest_key, "restaurador")
 
+   # ---------- Costo financiero, Fletes y Otros costos (varios; cada uno con quién pagó, para Caudal) ----------
+   def _bloques_gasto(titulo, clave_lista, clave_total, nombre, etiqueta, corto):
+       """Bloques con los mismos datos que Restauro. Productos anteriores: el monto suelto que tenían (clave_total)
+       pasa al primer bloque. Devuelve la lista capturada."""
+       st.subheader(titulo)
+       lista = datos_previos.get(clave_lista) or []
+       if not lista:
+           total_viejo = datos_previos.get(clave_total, "")
+           lista = [{"costo": "" if to_float(total_viejo) == 0 else total_viejo}]
+       clave_n = f"num_{corto}_{prefix}"
+       capturados = []
+       for i in range(_num_bloques(clave_n, len(lista))):
+           d_b = lista[i] if i < len(lista) else {}
+           n = i + 1
+           st.markdown(f"**{nombre} #{n}**")
+           g1, g2, g3 = st.columns(3)
+           prov = g1.text_input(f"PROVEEDOR {nombre.upper()} #{n}", value=str(d_b.get("prov", "") or ""), key=f"{prefix}_{corto}_prov_{i}")
+           fp = g2.selectbox(f"FORMA DE PAGO {nombre.upper()} #{n}", pago_opts, index=_idx(pago_opts, d_b.get("fp")), key=f"{prefix}_{corto}_fp_{i}")
+           qp = g3.selectbox(f"QUIÉN PAGÓ ({nombre.upper()}) #{n}", pago_quien_opts, index=_idx(pago_quien_opts, d_b.get("qp")), key=f"{prefix}_{corto}_qp_{i}")
+           g4, g5, g6 = st.columns(3)
+           fecha_b = g4.text_input(f"FECHA DE PAGO {nombre.upper()} #{n}", value=str(d_b.get("fecha", "") or ""), placeholder="10/oct/26", key=f"{prefix}_{corto}_fecha_{i}")
+           costo_prev = d_b.get("costo", "")
+           costo_txt = g5.text_input(f"COSTO {nombre.upper()} #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_{corto}_costo_{i}")
+           notas_b = g6.text_input(f"NOTAS {nombre.upper()} #{n}", value=str(d_b.get("notas", "") or ""), key=f"{prefix}_{corto}_notas_{i}")
+           capturados.append({"prov": prov, "fp": fp, "qp": qp, "fecha": fecha_b, "notas": notas_b,
+                              "costo": to_float(costo_txt), "_txt": costo_txt})
+       _botones_bloques(clave_n, etiqueta)
+       return capturados
+
+   financieros_capturados = _bloques_gasto("Costo Financiero", "COSTOS_FINANCIEROS", "COSTO_FINANCIERO",
+                                           "Costo financiero", "costo financiero", "fin")
+   fletes_capturados = _bloques_gasto("Fletes", "FLETES", "COSTO_FLETES", "Flete", "flete", "flete")
+   otros_capturados = _bloques_gasto("Otros Costos", "OTROS_COSTOS_DETALLE", "OTROS_COSTOS", "Otro costo",
+                                     "costo", "otros")
+
 
    st.divider()
    st.header("4. SECCIÓN COSTOS, SHOWROOM Y CASA PALACIO")
    # ---------- COSTOS BASE (manuales) ----------
    st.subheader("Registro de Costos Base")
    col_c1, col_c2, col_c3 = st.columns(3)
-   # Totales automáticos: suma de los costos de cada compra / cada restaurador (sección 3)
-   v_costo_adq = "x" if any(hay(c["_txt"]) for c in compras_capturadas) else ""
-   v_costo_rest = "x" if any(hay(r["_txt"]) for r in restauradores_capturados) else ""
-   tot_adq = round(sum(c["costo"] for c in compras_capturadas), 2)
-   tot_rest = round(sum(r["costo"] for r in restauradores_capturados), 2)
+   # Totales automáticos: suma de los costos de cada bloque de la sección 3
+   def _hay_txt(bloques):
+       return "x" if any(hay(b["_txt"]) for b in bloques) else ""
+
+   def _suma(bloques):
+       return round(sum(b["costo"] for b in bloques), 2)
+
+   v_costo_adq, v_costo_rest = _hay_txt(compras_capturadas), _hay_txt(restauradores_capturados)
+   v_costo_fin, v_costo_fletes = _hay_txt(financieros_capturados), _hay_txt(fletes_capturados)
+   v_otros_costos = _hay_txt(otros_capturados)
+   tot_adq, tot_rest = _suma(compras_capturadas), _suma(restauradores_capturados)
+   tot_fin, tot_fletes, tot_otros = _suma(financieros_capturados), _suma(fletes_capturados), _suma(otros_capturados)
    with col_c1:
        mostrar_calculado("COSTO ADQUISICIÓN TOTAL ($)", tot_adq if v_costo_adq else None, f"{prefix}_c_adq_tot",
                          "Suma de los costos de adquisición de cada compra")
-       v_costo_fin = st.text_input("COSTO FINANCIERO ($)", value=str(datos_previos.get("COSTO_FINANCIERO", "")), key=f"{prefix}_c_fin")
+       mostrar_calculado("COSTO FINANCIERO TOTAL ($)", tot_fin if v_costo_fin else None, f"{prefix}_c_fin_tot",
+                         "Suma de cada costo financiero (sección 3)")
    with col_c2:
        mostrar_calculado("COSTO RESTAURO TOTAL ($)", tot_rest if v_costo_rest else None, f"{prefix}_c_rest_tot",
                          "Suma de los costos de cada restaurador")
-       v_costo_fletes = st.text_input("COSTO FLETES ($)", value=str(datos_previos.get("COSTO_FLETES", "")), key=f"{prefix}_c_fletes")
+       mostrar_calculado("COSTO FLETES TOTAL ($)", tot_fletes if v_costo_fletes else None, f"{prefix}_c_fletes_tot",
+                         "Suma de cada flete (sección 3)")
    with col_c3:
-       v_otros_costos = st.text_input("OTROS COSTOS ($)", value=str(datos_previos.get("OTROS_COSTOS", "")), key=f"{prefix}_c_otros")
-   c_adq, c_fin, c_rest = tot_adq, to_float(v_costo_fin), tot_rest
-   c_fletes, c_otros = to_float(v_costo_fletes), to_float(v_otros_costos)
+       mostrar_calculado("OTROS COSTOS TOTAL ($)", tot_otros if v_otros_costos else None, f"{prefix}_c_otros_tot",
+                         "Suma de cada otro costo (sección 3)")
+   c_adq, c_fin, c_rest = tot_adq, tot_fin, tot_rest
+   c_fletes, c_otros = tot_fletes, tot_otros
    # TOTAL COSTO. Si el producto viejo no tenía desglose pero sí un total (o costo registrado), se respeta.
    hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos])
    suma_costos = c_adq + c_fin + c_rest + c_fletes + c_otros
@@ -807,6 +852,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "REQUERIMIENTOS": requerimientos,
            "COMPRAS": [{k: v for k, v in c.items() if k != "_txt"} for c in compras_capturadas],
            "RESTAURADORES": [{k: v for k, v in r.items() if k != "_txt"} for r in restauradores_capturados],
+           "COSTOS_FINANCIEROS": [{k: v for k, v in b.items() if k != "_txt"} for b in financieros_capturados],
+           "FLETES": [{k: v for k, v in b.items() if k != "_txt"} for b in fletes_capturados],
+           "OTROS_COSTOS_DETALLE": [{k: v for k, v in b.items() if k != "_txt"} for b in otros_capturados],
            "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
            "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
            "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,

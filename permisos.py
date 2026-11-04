@@ -38,6 +38,7 @@ PERMISOS = {
     "caudal":            (DIOS, ADMIN, CONTA, FACT),           # pestaña «Caudal» (ver, registrar y anular)
     "codigos":           (DIOS,),                              # pestaña «Códigos» de vendedores
     "avisos_precio":     (DIOS, ADMIN, CONTA),                 # aviso de cambios de precio autorizados
+    "sin_precio":        (DIOS, ADMIN),                        # casilla «Solo sin redondeo showroom» en Consultar / Buscar (Claudia la recibe por la regla de abajo)
 }
 
 # El rol «Claudia» tiene todo lo que tiene Administrador
