@@ -691,6 +691,13 @@ def pdf_de_pedido(sb, numero, doble=False):
         ped = dict(ped, _formas_pago=formas_pago(pagos))
     except Exception:
         pass
+    try:                                         # firma del cliente (si tiene)
+        import firmas
+        fz = firmas.para_pdf(firmas.leer(sb, "pedido", numero))
+        if fz:
+            ped = dict(ped, _firma=fz)
+    except Exception:
+        pass
     return _generar_pdf(ped, items, [v["vendedor"] for v in vends], doble)
 
 
@@ -1469,12 +1476,47 @@ def tab_pedidos(sb, user):
     ve_costos = user["role"] in ROLES_COSTOS
     puede_cancelar = user["role"] in ROLES_CANCELAR
 
-    msg = st.session_state.pop("vp_msg", None)
+    ss = st.session_state
+    msg = ss.pop("vp_msg", None)
     if msg:
         st.success(msg)
-    for aviso in st.session_state.pop("vp_avisos", []):
+    for aviso in ss.pop("vp_avisos", []):
         st.warning(aviso)
 
+    sel = ss.get("vp_abierto")
+    if sel is None:
+        _vista_lista_pedidos(sb, user, ve_costos)
+        return
+    volver_a = ss.get("vp_volver_a")
+    if st.button("← Volver a " + ("Por facturar" if volver_a == "Por facturar" else "la lista de pedidos"),
+                 key="vp_volver"):
+        ss.pop("vp_abierto", None)
+        if ss.pop("vp_volver_a", None):
+            ss["nav_ventas_ir"] = volver_a
+        st.rerun()
+    _ped = sb.table("pedidos").select("*").eq("numero_pedido", sel).execute().data
+    if not _ped:
+        st.warning(f"El pedido {sel} ya no existe.")
+        ss.pop("vp_abierto", None)
+        return
+    _detalle_pedido(sb, user, sel, _ped[0], ve_costos, puede_cancelar)
+
+
+def abrir_pedido(numero, volver_a=None):
+    """Abre el detalle de un pedido en Ventas › Pedidos (se usa como on_click: desde la lista o desde Por facturar)."""
+    ss = st.session_state
+    ss["vp_abierto"] = int(numero)
+    if volver_a:
+        ss["vp_volver_a"] = volver_a
+        ss["nav_ventas_ir"] = "Pedidos"
+
+
+def _fecha_corta(v):
+    f = _fecha_de(v)
+    return f.strftime("%d/%m/%Y") if f else str(v or "")
+
+
+def _vista_lista_pedidos(sb, user, ve_costos):
     # Captura rápida de costos (solo Administrador)
     try:
         from costos import captura_rapida_costos
@@ -1517,20 +1559,24 @@ def tab_pedidos(sb, user):
     else:
         st.caption("Últimos 50 pedidos. Usa la búsqueda o los filtros para ver otros.")
 
-    df = pd.DataFrame(rows).rename(columns={
-        "numero_pedido": "N° PEDIDO", "fecha": "FECHA", "cliente": "CLIENTE", "total": "TOTAL",
-        "anticipo": "ANTICIPO", "saldo": "SALDO", "status": "STATUS", "estado_pedido": "OBSERVACIONES",
-        "costo_total": "COSTO", "pago": "PAGO (CÓMO Y DÓNDE)"})
-    if not ve_costos and "COSTO" in df.columns:
-        df = df.drop(columns=["COSTO"])
-    st.dataframe(df, use_container_width=True, hide_index=True)
+    import lista_acciones as la
+    columnas = [("N° PEDIDO", 0.8, lambda r: f"**{r['numero_pedido']}**"),
+                ("FECHA", 1.0, lambda r: _fecha_corta(r.get("fecha"))),
+                ("CLIENTE", 2.3, lambda r: r.get("cliente") or ""),
+                ("TOTAL", 1.1, lambda r: la.dinero(r.get("total"))),
+                ("SALDO", 1.0, lambda r: la.dinero(r.get("saldo"))),
+                ("STATUS", 1.0, lambda r: r.get("status") or ""),
+                ("OBSERVACIONES", 1.6, lambda r: r.get("estado_pedido") or ""),
+                ("PAGO (CÓMO Y DÓNDE)", 1.9, lambda r: r.get("pago") or "")]
+    if ve_costos:
+        columnas.append(("COSTO", 1.0, lambda r: la.dinero(r.get("costo_total"))))
+    la.lista([dict(r, _id=r["numero_pedido"]) for r in rows], columnas, "vp_lista",
+             armar_pdf=lambda r: (pdf_de_pedido(sb, r["numero_pedido"]), f"pedido_{r['numero_pedido']}.pdf"),
+             al_ver=lambda r: abrir_pedido(r["numero_pedido"]),
+             ayuda_pdf="Descargar el PDF del pedido", ayuda_ver="Ver y editar el pedido")
 
-    sel = st.selectbox("Ver detalle del pedido", [r["numero_pedido"] for r in rows],
-                       index=None, key="vp_sel", placeholder="Elegir N° de pedido…")
-    if sel is None:
-        return
 
-    ped = sb.table("pedidos").select("*").eq("numero_pedido", sel).execute().data[0]
+def _detalle_pedido(sb, user, sel, ped, ve_costos, puede_cancelar):
     items = sb.table("pedido_items").select("*").eq("numero_pedido", sel).order("id").execute().data
     vends = sb.table("pedido_vendedores").select("vendedor").eq("numero_pedido", sel).execute().data
     pagos = sb.table("pedido_pagos").select("*").eq("numero_pedido", sel).execute().data

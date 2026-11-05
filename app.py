@@ -512,17 +512,43 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
 
 
    st.divider()
-   st.header("2. SECCIÓN VENTA")
-   cv1, cv2, cv3 = st.columns(3)
-   with cv1:
-       num_pedido = st.text_input("NÚMERO DE PEDIDO", value=str(datos_previos.get("NUMERO_PEDIDO", "")), key=f"{prefix}_npedido")
-       fecha_pedido = st.text_input("FECHA DEL PEDIDO", value=str(datos_previos.get("FECHA_PEDIDO", "")), placeholder="10/oct/26", key=f"{prefix}_fpedido")
-   with cv2:
-       vendedor = st.text_input("VENDEDOR", value=str(datos_previos.get("VENDEDOR", "")), key=f"{prefix}_vendedor")
-       factura = st.text_input("FACTURA", value=str(datos_previos.get("FACTURA", "")), key=f"{prefix}_factura")
-   with cv3:
-       fecha_factura = st.text_input("FECHA FACTURA", value=str(datos_previos.get("FECHA_FACTURA", "")), placeholder="10/oct/26", key=f"{prefix}_ffactura")
-       status_pago_entrega = st.text_input("STATUS DE PAGO Y/O ENTREGA", value=str(datos_previos.get("STATUS_PAGO_ENTREGA", "")), key=f"{prefix}_status")
+   st.header("2. SECCIÓN CONSIGNACIÓN")
+   # La sección «Venta» de antes (N° de pedido, vendedor, factura…) era del Excel: ya no se muestra, pero lo que
+   # tenían las fichas se conserva tal cual al guardar.
+   num_pedido, fecha_pedido = datos_previos.get("NUMERO_PEDIDO", ""), datos_previos.get("FECHA_PEDIDO", "")
+   vendedor, factura = datos_previos.get("VENDEDOR", ""), datos_previos.get("FACTURA", "")
+   fecha_factura, status_pago_entrega = datos_previos.get("FECHA_FACTURA", ""), datos_previos.get("STATUS_PAGO_ENTREGA", "")
+
+   es_consig = st.checkbox("Este producto es en CONSIGNACIÓN", value=bool(datos_previos.get("CONSIGNACION")),
+                           key=f"{prefix}_es_consig",
+                           help="El costo base suma al TOTAL COSTO. Cuando la pieza se venda, aparece un aviso y queda en "
+                                "Caudal → Pendientes por pagar para pagarle al consignador.")
+   consignador = str(datos_previos.get("CONSIGNADOR", "") or "")
+   fecha_consig = str(datos_previos.get("FECHA_CONSIGNACION", "") or "")
+   costo_consig_txt = "" if to_float(datos_previos.get("COSTO_CONSIGNACION", 0)) == 0 else str(datos_previos.get("COSTO_CONSIGNACION"))
+   if es_consig:
+       k_consignador = f"{prefix}_consignador"
+       cs1, cs2, cs3 = st.columns(3)
+       consignador = cs1.text_input("CONSIGNADOR *", value=consignador, key=k_consignador)
+       fecha_consig = cs2.text_input("FECHA EN QUE SE RECIBIÓ", value=fecha_consig, placeholder="10/oct/26",
+                                     key=f"{prefix}_fecha_consig")
+       costo_consig_txt = cs3.text_input("COSTO BASE DE CONSIGNACIÓN ($)", value=costo_consig_txt,
+                                         key=f"{prefix}_costo_consig",
+                                         help="Lo que se le paga al consignador cuando la pieza se vende.")
+       # Nombres que ya existen: para no escribir al mismo consignador de dos formas
+       try:
+           import pendientes as _pend
+           _sug = _pend.sugerir(_pend.consignadores(supabase), consignador)
+       except Exception:
+           _sug = []
+       _sug = [n for n in _sug if n != consignador.strip()]
+       if _sug:
+           def _usar_consignador(k, n):
+               st.session_state[k] = n
+           cs1.caption("¿Es alguno de estos? Tócalo para usar el mismo nombre:")
+           for _i, _n in enumerate(_sug):
+               cs1.button(_n, key=f"{prefix}_sug_consig_{_i}", on_click=_usar_consignador, args=(k_consignador, _n))
+   costo_consig = to_float(costo_consig_txt) if es_consig else 0.0
 
 
    st.divider()
@@ -557,6 +583,18 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            b2.button(f"Quitar la última" if etiqueta == "compra" else "Quitar el último",
                      key=f"{prefix}_btn_del_{etiqueta}", on_click=_sumar_bloques, args=(clave, -1))
 
+   def _estado_pago(d_b, clave_w):
+       """Casilla «Pendiente por pagar» de un costo. Marcada: no se descuenta de nadie al guardar; va a Caudal →
+       Pendientes por pagar y se descuenta al pagarlo. Costo nuevo (todavía sin monto) → marcada; uno que ya tenía
+       monto → como estaba. Si ya se pagó desde Pendientes, solo se muestra el pago."""
+       if d_b.get("pagado_monto") is not None:
+           st.caption(f"✅ Pagado desde Pendientes por pagar: ${to_float(d_b['pagado_monto']):,.2f} "
+                      f"({d_b.get('pagado_info') or ''}). Cambiar el costo aquí ya no modifica Caudal.")
+           return {k: d_b.get(k) for k in ("pagado_monto", "pagado_info", "pagado_cuenta", "pagado_medio")} | {"pend": False}
+       defecto = bool(d_b["pend"]) if "pend" in d_b else to_float(d_b.get("costo")) == 0
+       pend = st.checkbox("Pendiente por pagar (se descuenta en Caudal recién al pagarlo)", value=defecto, key=clave_w)
+       return {"pend": bool(pend)}
+
    # ---------- Datos de Compra (puede haber varias; cada una con su costo) ----------
    st.subheader("Datos de Compra")
    lista_compras = datos_previos.get("COMPRAS") or []
@@ -586,8 +624,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        c_costo = k5.text_input(f"COSTO ADQUISICIÓN #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_adq_{i_c}")
        c_fpago = k6.text_input(f"FECHA DE PAGO COMPRA #{n}", value=str(d_c.get("fpago", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fpagocompra_{i_c}")
        c_notas = st.text_input(f"NOTAS FORMA PAGO COMPRA #{n}", value=str(d_c.get("notas", "") or ""), key=f"{prefix}_notaspagocompra_{i_c}")
+       c_extra = _estado_pago(d_c, f"{prefix}_pend_compra_{i_c}")
        compras_capturadas.append({"prov": c_prov, "fp": c_fp, "qp": c_qp, "fadq": c_fadq, "costo": to_float(c_costo),
-                                  "fpago": c_fpago, "notas": c_notas, "_txt": c_costo})
+                                  "fpago": c_fpago, "notas": c_notas, "_txt": c_costo, **c_extra})
    _botones_bloques(num_comp_key, "compra")
    requerimientos = st.text_input("REQUERIMIENTOS", value=str(datos_previos.get("REQUERIMIENTOS", "")), key=f"{prefix}_req")
    # Campos sueltos de siempre = la primera compra (los usan la búsqueda y las cargas de Excel)
@@ -626,9 +665,10 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        costo_prev = d_r.get("costo", "")
        c_rest_txt = cr5.text_input(f"COSTO RESTAURO #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_rest_{idx_r}")
        n_rest = cr6.text_input(f"NOTAS FORMA PAGO RESTAURO #{n}", value=str(d_r.get("notas", "") or ""), key=f"{prefix}_npr_{idx_r}")
+       r_extra = _estado_pago(d_r, f"{prefix}_pend_rest_{idx_r}")
        restauradores_capturados.append({
            "prov": p_rest, "fp": fp_rest, "qp": qp_rest, "fecha": f_rest, "notas": n_rest,
-           "costo": to_float(c_rest_txt), "_txt": c_rest_txt,
+           "costo": to_float(c_rest_txt), "_txt": c_rest_txt, **r_extra,
        })
    _botones_bloques(num_rest_key, "restaurador")
 
@@ -656,8 +696,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            costo_prev = d_b.get("costo", "")
            costo_txt = g5.text_input(f"COSTO {nombre.upper()} #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_{corto}_costo_{i}")
            notas_b = g6.text_input(f"NOTAS {nombre.upper()} #{n}", value=str(d_b.get("notas", "") or ""), key=f"{prefix}_{corto}_notas_{i}")
+           b_extra = _estado_pago(d_b, f"{prefix}_{corto}_pend_{i}")
            capturados.append({"prov": prov, "fp": fp, "qp": qp, "fecha": fecha_b, "notas": notas_b,
-                              "costo": to_float(costo_txt), "_txt": costo_txt})
+                              "costo": to_float(costo_txt), "_txt": costo_txt, **b_extra})
        _botones_bloques(clave_n, etiqueta)
        return capturados
 
@@ -695,14 +736,19 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                          "Suma de los costos de cada restaurador")
        mostrar_calculado("COSTO FLETES TOTAL ($)", tot_fletes if v_costo_fletes else None, f"{prefix}_c_fletes_tot",
                          "Suma de cada flete (sección 3)")
+   v_costo_consig = "x" if es_consig and hay(costo_consig_txt) else ""
    with col_c3:
        mostrar_calculado("OTROS COSTOS TOTAL ($)", tot_otros if v_otros_costos else None, f"{prefix}_c_otros_tot",
                          "Suma de cada otro costo (sección 3)")
+       if es_consig:
+           mostrar_calculado("COSTO CONSIGNACIÓN TOTAL ($)", costo_consig if v_costo_consig else None,
+                             f"{prefix}_c_consig_tot", "Sección 2: lo que se le paga al consignador")
    c_adq, c_fin, c_rest = tot_adq, tot_fin, tot_rest
    c_fletes, c_otros = tot_fletes, tot_otros
    # TOTAL COSTO. Si el producto viejo no tenía desglose pero sí un total (o costo registrado), se respeta.
-   hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos])
-   suma_costos = c_adq + c_fin + c_rest + c_fletes + c_otros
+   hay_costos = any(hay(x) for x in [v_costo_adq, v_costo_fin, v_costo_rest, v_costo_fletes, v_otros_costos,
+                                       v_costo_consig])
+   suma_costos = c_adq + c_fin + c_rest + c_fletes + c_otros + costo_consig
    total_previo = to_float(datos_previos.get("TOTAL_COSTO", 0)) or to_float(datos_previos.get("COSTO_REGISTRADO", 0))
    if hay_costos and suma_costos > 0:
        total_costo = suma_costos
@@ -713,7 +759,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    else:
        total_costo = None
    mostrar_calculado("TOTAL COSTO ($)", total_costo, f"{prefix}_tot_costo",
-                     "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS")
+                     "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS"
+                     + (" + COSTO BASE DE CONSIGNACIÓN" if es_consig else ""))
    st.divider()
    col_show, col_cp = st.columns(2)
    # ---------- SHOWROOM ----------
@@ -805,6 +852,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        if not modelo:
            st.error("El campo MODELO es obligatorio.")
            return
+       if es_consig and not consignador.strip():
+           st.error("Es en consignación: escribe el CONSIGNADOR (sección 2).")
+           return
 
        # En alta, no permitir sobrescribir un modelo que ya existe
        if not is_edit:
@@ -844,6 +894,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
            "DISPONIBILIDAD": disponibilidad, "DISP": disponibilidad, "UBICACION": ubicacion,
            "CATEGORIA": categoria, "SUBCATEGORÍA": subcategoria, "ETIQUETAS": etiquetas,
+           "CONSIGNACION": bool(es_consig), "CONSIGNADOR": " ".join(consignador.split()),
+           "FECHA_CONSIGNACION": fecha_consig, "COSTO_CONSIGNACION": round(costo_consig, 2),
            "NUMERO_PEDIDO": num_pedido, "FECHA_PEDIDO": fecha_pedido, "VENDEDOR": vendedor,
            "FACTURA": factura, "FECHA_FACTURA": fecha_factura, "STATUS_PAGO_ENTREGA": status_pago_entrega,
            "PROVEEDOR_COMPRA": prov_compra, "FORMA_PAGO_COMPRA": forma_pago_compra,
@@ -899,6 +951,27 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                                             user.get("nombre") or user.get("role"))
                except Exception as ex_caudal:
                    st.warning(f"El producto se guardó, pero no se pudo registrar en Caudal: {ex_caudal}")
+           # Costos marcados «Pendiente por pagar» → Caudal · Pendientes por pagar
+           try:
+               import pendientes as _pend
+               for _a in _pend.sincronizar_costos_ficha(supabase, modelo, datos_guardar,
+                                                        user.get("nombre") or user.get("role")):
+                   st.warning(_a)
+           except Exception as ex_pend:
+               st.warning(f"El producto se guardó, pero no se pudieron registrar sus costos pendientes por pagar "
+                          f"({ex_pend}). ¿Ya corriste en Supabase el SQL de pendientes?")
+           # Consignación → Caudal · Pendientes por pagar
+           aviso_consig = None
+           if es_consig or datos_previos.get("CONSIGNACION"):
+               try:
+                   import pendientes as _pend
+                   aviso_consig = _pend.sincronizar_consignacion(supabase, modelo, datos_guardar,
+                                                                 user.get("nombre") or user.get("role"))
+               except Exception as ex_consig:
+                   aviso_consig = (f"El producto se guardó, pero no se pudo registrar la consignación en Pendientes "
+                                   f"({ex_consig}). ¿Ya corriste en Supabase el SQL de pendientes?")
+               if aviso_consig:
+                   st.warning(aviso_consig)
            if is_edit:
                st.success(f"¡Producto '{modelo}' actualizado correctamente!{info_foto}")
                # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
@@ -934,7 +1007,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            else:
                # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
                st.session_state["alta_version"] = version_alta + 1
-               st.session_state["alta_aviso_ok"] = f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
+               st.session_state["alta_aviso_ok"] = (f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
+                                                    + (f" Ojo: {aviso_consig}" if aviso_consig else ""))
                st.rerun()
        else:
            st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
@@ -1039,6 +1113,13 @@ try:
    _precios.render_aviso(supabase, user)
 except Exception:
    pass
+# Consignaciones vendidas por pagar (pendientes.py)
+if puede(user, "consignaciones"):
+   try:
+       import pendientes as _pendientes
+       _pendientes.render_aviso(supabase, user)
+   except Exception:
+       pass
 _bita.anotar("Encabezado y barra lateral (en cada clic)", _bita_ini, _bita.rss_mb())
 # Las pestañas que el rol no puede usar ni se muestran (ver permisos.py)
 _nombres_tabs = ["Consultar / Buscar"]
@@ -1305,7 +1386,8 @@ if tab1 is not None:
                               _venta = _ventas_pag.get(str(mod_p).strip())
                               st.error("Estado: VENDIDO" + (f" · {_venta}" if _venta else ""))
                           else:
-                              st.success("Estado: DISPONIBLE")
+                              _consig = " ".join(str(pdata.get("CONSIGNADOR") or "").split()) if pdata.get("CONSIGNACION") else ""
+                              st.success("Estado: DISPONIBLE" + (f"  \n*Consignación de {_consig}*" if _consig else ""))
                           
                           st.write(f"*Ubicación:* {pdata.get('UBICACION', 'N/A')}")
                           st.write(f"*Categoría:* {pdata.get('CATEGORIA', 'N/A')}")

@@ -795,8 +795,12 @@ def _restan(vence, estado):
     return "vence HOY" if d == 0 else (f"{d} día(s)" if d > 0 else "vencida")
 
 
-def tab_guardadas(sb, user):
-    ss = st.session_state
+def _abrir_cot(c):
+    st.session_state["ctg_abierta"] = c["id"]
+
+
+def _vista_lista_cotizaciones(sb):
+    """Lista de cotizaciones con 📄 (PDF) y 👁 (abrir) en cada renglón."""
     f1, f2 = st.columns([1, 3])
     filtro = f1.selectbox("Mostrar", ["Vigentes", "Todas", "Vencidas", "Convertidas", "Canceladas"], key="ctg_filtro")
     estados = {"Vigentes": ["Vigente"], "Vencidas": ["Vencida"], "Convertidas": ["Convertida"],
@@ -810,20 +814,39 @@ def tab_guardadas(sb, user):
         st.info("No hay cotizaciones con ese filtro.")
         return
     tot = _totales_lista(sb, tuple(c["id"] for c in cots), tuple((c["id"], c["estado"]) for c in cots))
-    df = pd.DataFrame([{
-        "Código": c["codigo"], "Cliente": c["cliente"], "Vendedor": c["vendedor"],
-        "Fecha": _fecha(c["fecha"]).strftime("%d/%m/%Y"), "Vence": _fecha(c["vence"]).strftime("%d/%m/%Y"),
-        "Restan": _restan(c["vence"], c["estado"]), "Estado": c["estado"],
-        "Piezas": tot.get(c["id"], {}).get("piezas", 0), "Total": tot.get(c["id"], {}).get("total", 0.0),
-        "N° pedido": c.get("numero_pedido") or ("PENDIENTE" if c["estado"] == "Vigente" else ""),
-        "Avisos": (f"⚠ {tot[c['id']]['bajas']} vendido(s)" if tot.get(c["id"], {}).get("bajas") else ""),
-    } for c in cots])
-    st.dataframe(df, use_container_width=True, hide_index=True,
-                 column_config={"Total": st.column_config.NumberColumn(format="$%.2f")})
+    import lista_acciones as la
+    t = lambda c: tot.get(c["id"], {})
+    columnas = [("CÓDIGO", 1.0, lambda c: f"**{c['codigo']}**"),
+                ("CLIENTE", 2.0, lambda c: c.get("cliente") or ""),
+                ("VENDEDOR", 1.3, lambda c: c.get("vendedor") or ""),
+                ("FECHA", 1.0, lambda c: _fecha(c["fecha"]).strftime("%d/%m/%Y")),
+                ("VENCE", 1.0, lambda c: _fecha(c["vence"]).strftime("%d/%m/%Y")
+                 + (f" · {_restan(c['vence'], c['estado'])}" if _restan(c["vence"], c["estado"]) else "")),
+                ("ESTADO", 1.0, lambda c: c["estado"]),
+                ("PIEZAS", 0.6, lambda c: str(t(c).get("piezas", 0))),
+                ("TOTAL", 1.1, lambda c: la.dinero(t(c).get("total", 0.0))),
+                ("N° PEDIDO", 0.9, lambda c: str(c.get("numero_pedido") or ("PENDIENTE" if c["estado"] == "Vigente" else ""))),
+                ("AVISOS", 1.0, lambda c: f"⚠ {t(c)['bajas']} vendido(s)" if t(c).get("bajas") else "")]
+    la.lista([dict(c, _id=c["id"]) for c in cots], columnas, "ctg_lista",
+             armar_pdf=lambda c: (pdf_de_cotizacion(sb, c["id"]), f"cotizacion_{c['codigo']}.pdf"),
+             al_ver=_abrir_cot, ayuda_pdf="Descargar el PDF de la cotización", ayuda_ver="Abrir la cotización")
 
-    sel = st.selectbox("Abrir cotización", [c["codigo"] for c in cots], key="ctg_sel")
-    cot = next(c for c in cots if c["codigo"] == sel)
-    cid = cot["id"]
+
+def tab_guardadas(sb, user):
+    ss = st.session_state
+    cid = ss.get("ctg_abierta")
+    if cid is None:
+        _vista_lista_cotizaciones(sb)
+        return
+    if st.button("← Volver a la lista de cotizaciones", key="ctg_volver"):
+        ss.pop("ctg_abierta", None)
+        st.rerun()
+    _c = sb.table("cotizaciones").select("*").eq("id", cid).execute().data
+    if not _c:
+        st.warning("Esa cotización ya no existe.")
+        ss.pop("ctg_abierta", None)
+        return
+    cot = _c[0]
     items = revisar_bajas(sb, {cid: cot}, items_de(sb, cid))
     st.markdown(f"### {cot['codigo']} — {cot['cliente']}  · {cot['estado']}")
     bajas = [i for i in items if i.get("baja")]

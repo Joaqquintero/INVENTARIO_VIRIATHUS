@@ -398,19 +398,34 @@ def tab_por_facturar(sb, user):
 
     st.caption("Marca uno o varios pendientes para facturarlos (varios = factura mostrador). "
                "Los ya facturados solo se pueden consultar.")
-    df = pd.DataFrame([{
-        "SELECCIONAR": False,
-        "ESTADO": "✅ Facturado" if facturado(p) else "🟡 Pendiente",
-        "N° FACTURA": (p.get("no_factura") or "").strip() or "—",
-        "N° PEDIDO": p["numero_pedido"], "FECHA": p["fecha"], "CLIENTE": p["cliente"],
-        "CONCEPTO": p.get("concepto") or "—", "USO CFDI": p.get("uso_cfdi") or "—", "TOTAL": float(_d(p["total"])),
-    } for p in lista])
-    ed = st.data_editor(
-        df, hide_index=True, use_container_width=True, key=f"pf_tabla_{ver}_{ss.get('pf_ver', 0)}",
-        disabled=[c for c in df.columns if c != "SELECCIONAR"],
-        column_config={"SELECCIONAR": st.column_config.CheckboxColumn("✔", width="small"),
-                       "TOTAL": st.column_config.NumberColumn("TOTAL", format="$%.2f")})
-    sel_num = set(ed.loc[ed["SELECCIONAR"], "N° PEDIDO"].tolist())
+    # Renglones con casilla (para elegir uno o varios) y 👁 para abrir el pedido en Ventas › Pedidos
+    import lista_acciones as la
+    from ventas import abrir_pedido
+    clave_sel = f"pf_sel_{ver}_{ss.get('pf_ver', 0)}"
+    marcados = set()
+
+    def _casilla(p, col):
+        if col.checkbox(" ", key=f"{clave_sel}_{p['numero_pedido']}", label_visibility="collapsed"):
+            marcados.add(p["numero_pedido"])
+
+    def _fecha_txt(v):
+        try:
+            return dt.date.fromisoformat(str(v)[:10]).strftime("%d/%m/%Y")
+        except ValueError:
+            return str(v or "")
+
+    columnas = [("ESTADO", 1.1, lambda p: "✅ Facturado" if facturado(p) else "🟡 Pendiente"),
+                ("N° FACTURA", 0.9, lambda p: (p.get("no_factura") or "").strip() or "—"),
+                ("N° PEDIDO", 0.8, lambda p: f"**{p['numero_pedido']}**"),
+                ("FECHA", 0.9, lambda p: _fecha_txt(p.get("fecha"))),
+                ("CLIENTE", 2.2, lambda p: p.get("cliente") or ""),
+                ("CONCEPTO", 1.5, lambda p: p.get("concepto") or "—"),
+                ("USO CFDI", 1.0, lambda p: p.get("uso_cfdi") or "—"),
+                ("TOTAL", 1.0, lambda p: la.dinero(_d(p["total"])))]
+    la.lista([dict(p, _id=p["numero_pedido"]) for p in lista], columnas, "pf_lista", antes=_casilla,
+             al_ver=lambda p: abrir_pedido(p["numero_pedido"], volver_a="Por facturar"),
+             ayuda_ver="Abrir el pedido (Ventas › Pedidos)", por_pagina=300)
+    sel_num = marcados
     if not sel_num:
         st.info("Marca en la tabla los pedidos que vas a facturar o consultar.")
         return

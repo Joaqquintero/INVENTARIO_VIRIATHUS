@@ -792,21 +792,39 @@ def _lista(sb, user):
                       + ("" if pendiente else " · CERRADA"))
         if ver == "Con pendientes" and not pendiente:
             continue
-        filas.append({"id": r["id"], "FOLIO": folio(r), "TIPO": "De pedido" if r["tipo"] == "pedido" else "Abierta",
+        filas.append({"id": r["id"], "_id": r["id"], "FOLIO": folio(r),
+                      "TIPO": "De pedido" if r["tipo"] == "pedido" else "Abierta",
                       "CLIENTE": r.get("cliente") or "", "FECHA": r.get("fecha") or "", "AVANCE": avance})
     if not filas:
         st.info("No hay remisiones para mostrar." + (" Las de pedido se generan desde el detalle del pedido."
                                                      if not rems else ""))
         return
-    import pandas as pd
-    st.dataframe(pd.DataFrame(filas).drop(columns=["id"]), use_container_width=True, hide_index=True)
-    etiquetas = {f["id"]: f"{f['FOLIO']} — {f['CLIENTE']}" for f in filas}
-    sel = st.selectbox("Abrir remisión", list(etiquetas), format_func=etiquetas.get, index=None,
-                       placeholder="Elegir…", key="rm_f_sel")
-    if sel:
-        ss["rm_sel"] = sel
-        ss.pop("rm_f_sel", None)
-        st.rerun()
+    import lista_acciones as la
+    columnas = [("FOLIO", 1.2, lambda f: f"**{f['FOLIO']}**"), ("TIPO", 0.9, lambda f: f["TIPO"]),
+                ("CLIENTE", 2.2, lambda f: f["CLIENTE"]),
+                ("FECHA", 1.0, lambda f: (_fecha(f["FECHA"]).strftime("%d/%m/%Y") if _fecha(f["FECHA"]) else "")),
+                ("AVANCE", 3.0, lambda f: f["AVANCE"])]
+    la.lista(filas, columnas, "rm_lista",
+             armar_pdf=lambda f: (pdf_de_remision(sb, f["id"]), f"remision_{f['FOLIO'].replace(' ', '_')}.pdf"),
+             al_ver=_abrir_rem, ayuda_pdf="Descargar el PDF de la remisión", ayuda_ver="Abrir la remisión")
+
+
+def _abrir_rem(f):
+    st.session_state["rm_sel"] = f["id"]
+
+
+def pdf_de_remision(sb, rid):
+    """PDF de la remisión ya guardada (con la firma de quien recibe, si tiene)."""
+    rem, items, pagos = leer(sb, rid)
+    if rem is None:
+        raise ValueError("Esa remisión ya no existe.")
+    fz = None
+    try:
+        import firmas
+        fz = firmas.para_pdf(firmas.leer(sb, "remision", rid))
+    except Exception:
+        pass
+    return generar_pdf(rem, items, pagos, fz)
 
 
 def _nueva_abierta(sb, user):

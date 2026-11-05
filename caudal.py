@@ -16,6 +16,8 @@ De dónde salen los movimientos:
     efectivo o transferencia según la forma de pago. Solo cuenta lo que se carga o cambia desde el encendido (si una compra vieja pasa de $5,000 a $6,000,
     se resta $1,000). «Ponerse al día» carga de una vez los costos completos de todas las fichas.
   * MANUALES: traspasos (Caja → Ernesto, o efectivo → transferencia), entradas y gastos.
+  * APARTADOS (pendientes.py): plata separada en una cuenta para pagar varios pendientes. No es un movimiento: la
+    tarjeta muestra lo LIBRE (saldo − apartado). Cada pago desde un apartado es una sola línea en Movimientos.
 Los movimientos no se borran: se anulan (quién, cuándo y por qué).
 
 Tablas: ver CAUDAL_SQL.
@@ -204,6 +206,12 @@ def anular(sb, mov, motivo, usuario):
         q.eq("grupo", mov["grupo"]).execute()
     else:
         q.eq("id", mov["id"]).execute()
+    if mov.get("origen") == "pendiente":          # era el pago de un pendiente: vuelve a por pagar
+        try:
+            import pendientes
+            pendientes.deshacer_pago(sb, mov)
+        except Exception:
+            pass
     codigos.registrar(sb, usuario, "Anuló movimiento de Caudal", "caudal", str(mov.get("id")), motivo.strip())
 
 
@@ -218,8 +226,21 @@ NOMBRE_TIPO = {"compra": "Compra", "restauro": "Restauro", "financiero": "Costo 
                "otro": "Otro costo"}
 
 
+def _bloque(clave, tipo, b, costo, texto):
+    """Un costo de la ficha para Caudal, o None si está «Pendiente por pagar» (se descuenta al pagarlo, desde
+    Caudal → Pendientes). Si se pagó desde Pendientes cuentan el monto y la cuenta del pago, no lo que diga hoy la ficha."""
+    if b.get("pend"):
+        return None
+    if b.get("pagado_monto") is not None:
+        return (clave, tipo, *normalizar(b.get("pagado_cuenta") or cuenta_de_quien(b.get("qp")),
+                                         b.get("pagado_medio") or medio_de_forma(b.get("fp"))),
+                round(_num(b.get("pagado_monto")), 2), texto)
+    return (clave, tipo, *normalizar(cuenta_de_quien(b.get("qp")), medio_de_forma(b.get("fp"))),
+            round(_num(costo), 2), texto)
+
+
 def _bloques(datos):
-    """[(clave, tipo, cuenta, medio, costo, texto)] de las compras y restauros de una ficha."""
+    """[(clave, tipo, cuenta, medio, costo, texto)] de los costos de una ficha (sin los pendientes por pagar)."""
     datos = datos or {}
     out = []
     compras = datos.get("COMPRAS") or []
@@ -227,15 +248,15 @@ def _bloques(datos):
         compras = [{"prov": datos.get("PROVEEDOR_COMPRA"), "fp": datos.get("FORMA_PAGO_COMPRA"),
                     "qp": datos.get("QUIEN_PAGO_COMPRA"), "costo": datos.get("COSTO_ADQUISICION")}]
     for n, c in enumerate(compras):
-        out.append((f"compra:{n}", "compra", *normalizar(cuenta_de_quien(c.get("qp")), medio_de_forma(c.get("fp"))),
-                    round(_num(c.get("costo")), 2), f"Compra #{n + 1}" + (f" · {c.get('prov')}" if c.get("prov") else "")))
+        out.append(_bloque(f"compra:{n}", "compra", c, c.get("costo"),
+                           f"Compra #{n + 1}" + (f" · {c.get('prov')}" if c.get("prov") else "")))
     rest = datos.get("RESTAURADORES") or []
     for n, r in enumerate(rest):
         costo = r.get("costo")
         if costo in (None, "") and n == 0 and not any("costo" in x for x in rest):
             costo = datos.get("COSTO_RESTAURO")
-        out.append((f"restauro:{n}", "restauro", *normalizar(cuenta_de_quien(r.get("qp")), medio_de_forma(r.get("fp"))),
-                    round(_num(costo), 2), f"Restaurador #{n + 1}" + (f" · {r.get('prov')}" if r.get("prov") else "")))
+        out.append(_bloque(f"restauro:{n}", "restauro", r, costo,
+                           f"Restaurador #{n + 1}" + (f" · {r.get('prov')}" if r.get("prov") else "")))
     # Costo financiero, fletes y otros costos: igual que restauro. Fichas anteriores (solo el monto suelto, sin
     # quién pagó) cuentan como un bloque, para que al pasar a bloques no se registre como un costo nuevo.
     for tipo, lista_k, total_k, nombre in GASTOS_FICHA:
@@ -243,9 +264,9 @@ def _bloques(datos):
         if not lista and _num(datos.get(total_k)):
             lista = [{"costo": datos.get(total_k)}]
         for n, b in enumerate(lista):
-            out.append((f"{tipo}:{n}", tipo, *normalizar(cuenta_de_quien(b.get("qp")), medio_de_forma(b.get("fp"))),
-                        round(_num(b.get("costo")), 2), f"{nombre} #{n + 1}" + (f" · {b.get('prov')}" if b.get("prov") else "")))
-    return out
+            out.append(_bloque(f"{tipo}:{n}", tipo, b, b.get("costo"),
+                               f"{nombre} #{n + 1}" + (f" · {b.get('prov')}" if b.get("prov") else "")))
+    return [b for b in out if b is not None]
 
 
 def _cargado(sb, modelo):
@@ -260,6 +281,15 @@ def _cargado(sb, modelo):
         k = normalizar(f["cuenta"], f["medio"])
         d[k] = round(d.get(k, 0.0) + _num(f["monto"]), 2)
     return out
+
+
+def _es_pendiente(datos, clave):
+    """¿El costo `clave` («restauro:0») de la ficha está marcado «Pendiente por pagar»?"""
+    tipo, n = clave.split(":")
+    lista_k = {"compra": "COMPRAS", "restauro": "RESTAURADORES"}.get(tipo) or next(
+        (lk for t, lk, _, _ in GASTOS_FICHA if t == tipo), None)
+    lista = (datos or {}).get(lista_k) or []
+    return int(n) < len(lista) and bool(lista[int(n)].get("pend"))
 
 
 def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
@@ -295,11 +325,18 @@ def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
         base = {"fecha": hoy, "tipo": tipo, "origen": "ficha", "referencia": ref, "usuario": usuario,
                 "concepto": f"{NOMBRE_TIPO.get(tipo, tipo.capitalize())} · Mod {modelo}",
                 "detalle": " · ".join(x for x in (texto, nombre) if x)}
+        if ya and not completo:
+            # Ya había algo cargado de este costo: lo que se registre ahora es una CORRECCIÓN (se ve en azul)
+            costo_antes = antes[clave][4] if clave in antes else 0.0
+            base["concepto"] = "Corrección · " + base["concepto"]
+            base["detalle"] = (f"costo {dinero(costo_antes)} → {dinero(costo_nuevo)}"
+                               + (" (pasó a pendiente por pagar)" if nuevo_b is None and _es_pendiente(nuevos, clave) else "")
+                               + " · " + base["detalle"])
         # Lo ya restado que quedó en otra cuenta (cambió quién pagó o la forma de pago) se devuelve allá
         for (cta, med), suma in ya.items():
             if (cta, med) != destino and abs(suma) > 0.004:
                 filas.append({**base, "cuenta": cta, "medio": med, "monto": round(-suma, 2),
-                              "detalle": base["detalle"] + " · corrección (cambió quién pagó o la forma de pago)"})
+                              "detalle": base["detalle"] + (" · cambió quién pagó o la forma de pago" if destino else "")})
         en_destino = ya.get(destino, 0.0) if destino else 0.0
         delta = round(objetivo - en_destino, 2)
         if destino and abs(delta) > 0.004:
@@ -375,7 +412,10 @@ def _ventas(sb, inicio):
             for x in (sb.table("pedidos").select("numero_pedido,cliente,fecha,status,estado_pedido,origen")
                       .in_("numero_pedido", faltan[i:i + 300]).execute().data or []):
                 peds[x["numero_pedido"]] = x
-    except Exception:
+    except Exception as ex:
+        # Sin esto Caudal mostraría saldos sin las ventas y nadie se daría cuenta
+        st.error("⚠️ No se pudieron leer los cobros de los pedidos: los saldos de abajo NO incluyen las ventas. "
+                 f"Recarga la página en un momento; si sigue igual, avisa. ({ex})")
         return []
     out = []
     for p in pagos.values():
@@ -452,25 +492,36 @@ def _color(n):
     return VERDE if n > 0.004 else (ROJO if n < -0.004 else "#d9d1c3")
 
 
-def _tarjetas(s):
+def _tarjetas(s, apartado=None):
+    """`apartado` = {(cuenta, medio): monto} de los apartados abiertos: la tarjeta muestra lo LIBRE."""
+    apartado = apartado or {}
     cols = st.columns(len(CUENTAS))
     for col, c in zip(cols, CUENTAS):
         ef, tr = s[c]["efectivo"], s[c]["transferencia"]
         tot = ef + tr
+        ap = sum(v for (cta, _), v in apartado.items() if cta == c)
         medios = MEDIOS_DE.get(c, MEDIOS)
         fila_ef = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Efectivo</span>
   <span style="color:{_color(ef)};font-variant-numeric:tabular-nums">{dinero(ef)}</span></div>""" if "efectivo" in medios else ""
         fila_tr = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Transferencia</span>
   <span style="color:{_color(tr)};font-variant-numeric:tabular-nums">{dinero(tr)}</span></div>""" if "transferencia" in medios else ""
+        fila_ap = (f"""<div style="font-size:.78rem;opacity:.8;text-align:right;margin-top:2px;">
+  <span style="color:{AZUL}">📦 Apartado {dinero(ap)}</span> · Total {dinero(tot)}</div>""" if ap > 0.004 else "")
         col.markdown(f"""
 <div style="border:1px solid rgba(160,150,135,.35);border-radius:12px;padding:14px 16px;">
  <div style="font-size:1.35rem;font-weight:600;margin-bottom:8px;">{c}</div>
  {fila_ef}
  {fila_tr}
  <div style="border-top:1px solid rgba(160,150,135,.35);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;align-items:baseline;">
-  <span style="opacity:.75;font-size:.8rem;letter-spacing:1px">TOTAL</span>
-  <span style="color:{_color(tot)};font-size:1.3rem;font-weight:600;font-variant-numeric:tabular-nums">{dinero(tot)}</span></div>
+  <span style="opacity:.75;font-size:.8rem;letter-spacing:1px">{'LIBRE' if ap > 0.004 else 'TOTAL'}</span>
+  <span style="color:{_color(tot - ap)};font-size:1.3rem;font-weight:600;font-variant-numeric:tabular-nums">{dinero(tot - ap)}</span></div>
+ {fila_ap}
 </div>""", unsafe_allow_html=True)
+
+
+def es_correccion(m):
+    return (str(m.get("concepto") or "").startswith("Corrección")
+            or (m.get("origen") == "ficha" and _num(m.get("monto")) > 0))
 
 
 def _clase(m):
@@ -478,20 +529,61 @@ def _clase(m):
         return "anulado"
     if m.get("tipo") == "traspaso":
         return "traspaso"
+    if es_correccion(m):
+        return "correccion"
     return "venta" if _num(m.get("monto")) > 0 else "gasto"
 
 
+def _juntar_apartados(movs):
+    """Los pagos hechos desde un apartado en una misma vez (mismo «lote») se ven como UNA línea que se abre."""
+    out, lotes = [], {}
+    for m in movs:
+        lote = str(m.get("lote") or "")
+        if not lote.startswith("apartado:"):
+            out.append(m)
+            continue
+        g = lotes.get(lote)
+        if g is None:
+            nombre = str(m.get("concepto") or "").split(" · Pago", 1)[0]
+            g = lotes[lote] = {"fecha": m.get("fecha"), "concepto": nombre, "cuenta": m.get("cuenta"),
+                               "medio": m.get("medio"), "origen": "pendiente", "tipo": "pago", "_hijos": []}
+            out.append(g)
+        g["_hijos"].append(m)
+    for g in lotes.values():
+        vivos = [h for h in g["_hijos"] if not h.get("anulado")]
+        g["monto"] = round(sum(_num(h.get("monto")) for h in (vivos or g["_hijos"])), 2)
+        g["anulado"] = not vivos
+        if g["anulado"]:
+            g["anulado_por"], g["motivo"] = g["_hijos"][0].get("anulado_por"), g["_hijos"][0].get("motivo")
+    return out
+
+
+def _detalle_apartado(m):
+    """Lo de adentro de la línea de un apartado: cada pieza pagada (las anuladas, tachadas)."""
+    n = len(m["_hijos"])
+    filas = "".join(
+        f"""<div style="display:flex;justify-content:space-between;gap:12px;{'text-decoration:line-through;opacity:.6;' if h.get('anulado') else ''}">
+<span>{escape(str(h.get('concepto') or '').split(' · ', 1)[-1])}{(' · ' + escape(str(h.get('detalle')))) if h.get('detalle') else ''}</span>
+<span style="white-space:nowrap;font-variant-numeric:tabular-nums">{dinero(_num(h.get('monto')))}</span></div>"""
+        for h in m["_hijos"])
+    return (f"""<details><summary style="cursor:pointer;font-size:.8rem;opacity:.75">{n} pieza(s) · ver</summary>
+<div style="font-size:.8rem;opacity:.85;margin-top:4px">{filas}</div></details>""")
+
+
 def _tabla(movs, limite=300):
-    colores = {"venta": VERDE, "gasto": ROJO, "traspaso": AZUL, "anulado": GRIS}
+    movs = _juntar_apartados(movs)
+    colores = {"venta": VERDE, "gasto": ROJO, "traspaso": AZUL, "correccion": AZUL, "anulado": GRIS}
     fondos = {"venta": "rgba(95,207,138,.08)", "gasto": "rgba(240,138,120,.08)", "traspaso": "transparent",
-              "anulado": "transparent"}
-    origenes = {"pedido": "Pedido", "ficha": "Ficha", "manual": "Manual"}
+              "correccion": "rgba(159,180,216,.08)", "anulado": "transparent"}
+    origenes = {"pedido": "Pedido", "ficha": "Ficha", "manual": "Manual", "pendiente": "Pendiente"}
     filas = []
     for m in movs[:limite]:
         k = _clase(m)
         c = colores[k]
         fe = _fecha(m.get("fecha"))
         det = escape(str(m.get("detalle") or ""))
+        if m.get("_hijos"):
+            det = _detalle_apartado(m)
         if m.get("anulado"):
             det = f"Anulado por {escape(str(m.get('anulado_por') or ''))}: {escape(str(m.get('motivo') or ''))}" + (
                 f" · {det}" if det else "")
@@ -555,23 +647,39 @@ def render(sb, user):
         st.error(f"No se pudieron leer los movimientos. ¿Ya corriste en Supabase el SQL de Caudal? ({ex})")
         return
 
-    _tarjetas(saldos(movs))
+    sal = saldos(movs)
+    try:
+        import pendientes
+        apartado = pendientes.apartado_por_cuenta(sb)
+    except Exception:
+        apartado = {}
+    _tarjetas(sal, apartado)
     st.write("")
     st.markdown("**Para registrar o anular, identifícate:**")
     q_v, q_c = codigos.pedir_identidad(sb, "cd_id")
+
+    # Movimientos (lo que ya entró y salió) | Pendientes por pagar (lo que se debe)
+    from navegacion import selector
+    vista = selector(["Movimientos", "Pendientes por pagar"], "nav_caudal", "Vista de Caudal")
+    if vista == "Pendientes por pagar":
+        import pendientes
+        pendientes.render_lista(sb, user, q_v, q_c, saldos=sal)
+        return
 
     izq, der = st.columns([2, 1])
     with izq:
         st.subheader("Movimientos")
         f1, f2, f3, f4 = st.columns(4)
         persona = f1.selectbox("Persona", ["Todas"] + list(CUENTAS), key="cd_f_persona")
-        tipo = f2.selectbox("Tipo", ["Todos", "Ventas", "Gastos", "Traspasos", "Anulados"], key="cd_f_tipo")
+        tipo = f2.selectbox("Tipo", ["Todos", "Ventas", "Gastos", "Traspasos", "Correcciones", "Anulados"],
+                            key="cd_f_tipo")
         desde = f3.date_input("Desde", value=inicio, key="cd_f_desde", format="DD/MM/YYYY")
         hasta = f4.date_input("Hasta", value=None, key="cd_f_hasta", format="DD/MM/YYYY")
         st.markdown(f"<span style='color:{VERDE}'>●</span> Venta (entra) &nbsp; <span style='color:{ROJO}'>●</span> "
-                    f"Gasto (compra / restauro) &nbsp; <span style='color:{AZUL}'>●</span> Traspaso &nbsp; "
+                    f"Gasto (compra / restauro) &nbsp; <span style='color:{AZUL}'>●</span> Traspaso o corrección &nbsp; "
                     f"<span style='color:{GRIS}'>●</span> Anulado", unsafe_allow_html=True)
-        filtro = {"Ventas": "venta", "Gastos": "gasto", "Traspasos": "traspaso", "Anulados": "anulado"}.get(tipo)
+        filtro = {"Ventas": "venta", "Gastos": "gasto", "Traspasos": "traspaso", "Correcciones": "correccion",
+                  "Anulados": "anulado"}.get(tipo)
         vis = []
         for m in movs:
             fe = _fecha(m.get("fecha"))
@@ -589,10 +697,11 @@ def render(sb, user):
         else:
             st.info("No hay movimientos con ese filtro.")
 
-        anulables = [m for m in vis if not m.get("anulado") and m.get("origen") in ("manual", "ficha")]
+        anulables = [m for m in vis if not m.get("anulado") and m.get("origen") in ("manual", "ficha", "pendiente")]
         with st.expander("Anular un movimiento"):
             st.caption("Los movimientos no se borran: quedan tachados con quién los anuló y por qué. Un traspaso se "
-                       "anula completo. Las ventas se corrigen desde el pedido (si se cancela, dejan de contar solas).")
+                       "anula completo. Las ventas se corrigen desde el pedido (si se cancela, dejan de contar solas). "
+                       "Anular el pago de un pendiente lo regresa a «Pendientes por pagar».")
             if not anulables:
                 st.caption("No hay movimientos para anular con este filtro.")
             else:
