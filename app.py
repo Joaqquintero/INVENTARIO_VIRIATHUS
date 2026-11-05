@@ -1404,6 +1404,11 @@ if tab1 is not None:
                               _med = [f"{etq} {pdata.get(c)}" for c, etq in (("ALTO", "Alto"), ("LARGO", "Largo"), ("ANCHO_PROF", "Ancho/Prof.")) if str(pdata.get(c, "") or "").strip()]
                               st.markdown("**Medidas**")
                               st.write((" · ".join(_med) + " cm") if _med else "—")
+                              # Precio Casa Palacio: solo si la ficha lo tiene (0 o vacío = sin precio de C/P)
+                              _pcp = to_float(pdata.get("CP_PRECIO_REDONDEADO", 0))
+                              if _pcp > 0:
+                                  st.markdown("**Precio de venta Casa Palacio (con IVA)**")
+                                  st.write(f"${_pcp:,.2f}")
 
                           url_drive = f"https://drive.google.com/drive/folders/{ID_MASTER_FOTOS}?q={mod_p}"
                           st.link_button("Fotos en Google Drive", url_drive, use_container_width=True, key=f"drive_btn_{mod_p}_{idx}")
