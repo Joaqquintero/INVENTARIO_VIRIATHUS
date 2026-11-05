@@ -1131,6 +1131,8 @@ if puede(user, "shopify_lista"):
     _nombres_tabs.append("Shopify")
 if MOSTRAR_VENTAS:
     _nombres_tabs.append("Ventas")
+if MOSTRAR_VENTAS and puede(user, "resumen_mensual"):
+    _nombres_tabs.append("Reportes")
 if _HAY_CAUDAL and puede(user, "caudal"):
     _nombres_tabs.append("Caudal")
 # Solo se carga la sección elegida (con st.tabs se cargaban todas en cada clic)
@@ -1141,6 +1143,8 @@ def _nombre_actividad(nombre):
     def f():
         ss = st.session_state
         partes = [nombre]
+        if nombre == "Reportes" and ss.get("nav_reportes__ultimo"):
+            partes.append(ss["nav_reportes__ultimo"])
         if nombre == "Ventas" and ss.get("nav_ventas__ultimo"):
             partes.append(ss["nav_ventas__ultimo"])
             if ss["nav_ventas__ultimo"] == "Cotizaciones" and ss.get("nav_cot__ultimo"):
@@ -1162,6 +1166,7 @@ tab3 = _seccion_si("Herramientas & Scripts")
 tab5 = _seccion_si("Shopify")
 tab4 = _seccion_si("Ventas")
 tab_caudal = _seccion_si("Caudal")
+tab_reportes = _seccion_si("Reportes")
 
 
 # DIÁLOGO DE EDICIÓN EN MODAL
@@ -1490,6 +1495,15 @@ if tab3 is not None:
 if tab4 is not None:
    with tab4:
        render_ventas(supabase, user)
+
+# REPORTES: resumen mensual, anual y descuentos
+if tab_reportes is not None:
+   with tab_reportes:
+       try:
+           import reportes
+           reportes.render(supabase, user)
+       except Exception as ex:
+           st.error(f"Reportes no disponible: {ex}")
 
 # CAUDAL: dinero por persona
 if tab_caudal is not None:

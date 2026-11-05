@@ -1655,6 +1655,11 @@ def _detalle_pedido(sb, user, sel, ped, ve_costos, puede_cancelar):
     if pagos:
         st.dataframe(pd.DataFrame(pagos)[["forma_pago", "banco_caja", "monto", "fecha_pago"]],
                      use_container_width=True, hide_index=True)
+        try:
+            import comprobantes            # ticket de terminal / transferencia, uno por cobro (opcional)
+            comprobantes.render(sb, user, pagos)
+        except Exception as ex:
+            st.caption(f"Comprobantes no disponible: {ex}")
 
     if user["role"] in ROLES_EDITAR:
         ya_cancelado = ped.get("estado_pedido") == "Cancelado" or ped.get("status") == "Cancelado"
@@ -2082,8 +2087,7 @@ def render_ventas(sb, user):
             secciones.insert(secciones.index(("Pedidos", tab_pedidos)) + 1, ("Por facturar", tab_por_facturar))
     except Exception as ex:
         st.caption(f"Por facturar no disponible: {ex}")
-    if user["role"] in ROLES_RESUMEN:
-        secciones.append(("Resumen mensual", tab_resumen))
+    # «Resumen mensual» se movió a la sección «Reportes» (reportes.py)
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))
     if user["role"] in roles("codigos"):
