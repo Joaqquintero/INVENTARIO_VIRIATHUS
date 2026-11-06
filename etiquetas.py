@@ -299,23 +299,32 @@ def render_etiquetas(sb):
         txt = st.text_area("Modelos (separados por coma, espacio o salto de línea)", key="et_lista", height=90)
         candidatos = [t for t in re.split(r"[,\s;]+", txt.strip()) if t]
 
-    url_base = st.text_input(
-        "Dirección del QR (déjala vacía para etiquetas sin QR)",
-        value=str(st.secrets.get("TIENDA_QR_URL", "https://viriathus.com.mx/")), key="et_url",
-        placeholder="https://viriathus.com.mx/",
-        help="La dirección que se codifica en el QR. Pégala completa, por ejemplo la de un producto: "
-             "https://viriathus.com.mx/collections/objetos/products/escultura-rodo-padilla. "
-             "Abajo eliges si se usa tal cual, solo la página principal, o con el modelo agregado al final.").strip()
-
+    FICHA = "La ficha del inventario (página pública)"
     modo_qr = st.radio("¿A dónde lleva el QR?",
-                       ["El enlace de cada producto (desde Shopify)", "La dirección exacta que escribí arriba",
-                        "Página principal de la tienda", "La dirección + el modelo"],
+                       [FICHA, "El enlace de cada producto (desde Shopify)", "La dirección exacta que escribí abajo",
+                        "Página principal de la tienda", "La dirección + el modelo", "Sin QR"],
                        index=0, horizontal=True, key="et_modo_qr",
-                       help="«Enlace de cada producto»: cada QR abre la publicación de su producto en tu tienda (se busca en Shopify por "
-                            "el modelo; si un producto no está publicado, su QR lleva a la página principal). «Exacta»: todos los QR "
-                            "abren lo que escribiste. «Dirección + el modelo»: agrega el modelo al final.")
-    qr_modo = {"El enlace de cada producto (desde Shopify)": "shopify", "La dirección exacta que escribí arriba": "exacta", "Página principal de la tienda": "inicio",
-               "La dirección + el modelo": "modelo"}[modo_qr]
+                       help="«Ficha del inventario»: cada QR abre la página pública de su pieza con los datos en vivo "
+                            "(foto, precio, medidas, disponible / vendida), esté o no en la tienda en línea. "
+                            "«Enlace de cada producto»: la publicación en Shopify (si no está publicada, la página principal). "
+                            "«Exacta»: todos los QR abren lo que escribas. «Dirección + el modelo»: agrega el modelo al final.")
+    if modo_qr == FICHA:
+        # La dirección sale de los secrets (FICHA_PUBLICA_URL) para poder cambiar de dominio sin tocar código
+        base_ficha = str(st.secrets.get("FICHA_PUBLICA_URL", "https://viriathusapp.vercel.app")).strip().rstrip("/")
+        url_base, qr_modo = f"{base_ficha}/p/", "modelo"
+        st.caption(f"Cada QR abre **{url_base}<modelo>** (por ejemplo {url_base}32654). "
+                   "Revisa que esa dirección abra bien antes de imprimir muchas.")
+    elif modo_qr == "Sin QR":
+        url_base, qr_modo = "", "exacta"
+    else:
+        url_base = st.text_input(
+            "Dirección del QR",
+            value=str(st.secrets.get("TIENDA_QR_URL", "https://viriathus.com.mx/")), key="et_url",
+            placeholder="https://viriathus.com.mx/",
+            help="La dirección que se codifica en el QR. Pégala completa, por ejemplo la de un producto: "
+                 "https://viriathus.com.mx/collections/objetos/products/escultura-rodo-padilla.").strip()
+        qr_modo = {"El enlace de cada producto (desde Shopify)": "shopify", "La dirección exacta que escribí abajo": "exacta",
+                   "Página principal de la tienda": "inicio", "La dirección + el modelo": "modelo"}[modo_qr]
     o1, o2, o3 = st.columns(3)
     copias = o1.number_input("Copias de cada una", min_value=1, max_value=20, value=1, step=1, key="et_copias")
     margen = o2.number_input("Margen sin imprimir (mm por lado)", min_value=0.0, max_value=10.0, value=MARGEN_MM, step=0.5,
