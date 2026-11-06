@@ -298,9 +298,79 @@ def marcar_disponibilidad(sb, modelo, vendido):
     return _sync_shopify_disponibilidad(modelo, vendido)
 
 
+# ----------------------------------------------------------------------
+# Productos con varias unidades (CANTIDAD > 1): cada pedido descuenta las que vende
+# ----------------------------------------------------------------------
+# En la ficha: CANTIDAD = unidades que QUEDAN; UNIDADES_PEDIDOS = {"<pedido>": unidades que se llevó ese pedido}.
+# Al llegar a 0 queda vendido ('v'); si se cancela / se quita del pedido, las unidades vuelven y queda disponible.
+def _leer_ficha(sb, modelo):
+    r = sb.table("productos").select("datos_json").eq("MODELO", modelo).limit(1).execute()
+    return _parse(r.data[0].get("datos_json")) if r.data else None
+
+
+def es_multiple(d):
+    """¿Producto con varias unidades? (CANTIDAD distinta de 1 —más de 1, o 0 porque se agotó— o ya vendió unidades en pedidos)."""
+    return bool(d) and (_num(d.get("CANTIDAD"), 1.0) != 1 or bool(d.get("UNIDADES_PEDIDOS")))
+
+
+def unidades_en_pedido(sb, modelo, numero, unidades, ya_descontadas=False):
+    """Deja que el pedido `numero` se lleve `unidades` del modelo (0 = ninguna: las devuelve).
+    `ya_descontadas`: las unidades ya se restaron antes (cotización que pasó a pedido): solo se anotan.
+    Devuelve una lista de avisos."""
+    d = _leer_ficha(sb, modelo)
+    if d is None:
+        return [f"Modelo {modelo}: no se encontró en inventario."]
+    reg = dict(d.get("UNIDADES_PEDIDOS") or {})
+    clave = str(numero)
+    antes = int(_num(reg.get(clave), 0))
+    unidades = max(int(unidades or 0), 0)
+    delta = 0 if ya_descontadas else unidades - antes
+    quedan_antes = _num(d.get("CANTIDAD"), 1.0)
+    quedan = quedan_antes - delta
+    avisos = []
+    if quedan < 0:
+        avisos.append(f"Modelo {modelo}: solo quedaban {quedan_antes:g} unidad(es) y el pedido {numero} lleva "
+                      f"{unidades}. Quedó en 0: revisa la cantidad en la ficha.")
+        quedan = 0
+    if unidades:
+        reg[clave] = unidades
+    else:
+        reg.pop(clave, None)
+    d["CANTIDAD"] = int(quedan) if float(quedan).is_integer() else quedan
+    if reg:
+        d["UNIDADES_PEDIDOS"] = reg
+    else:
+        d.pop("UNIDADES_PEDIDOS", None)
+    est_antes = str(d.get("DISP", d.get("DISPONIBILIDAD", "")) or "").strip().lower()
+    vendido = quedan <= 0
+    if vendido:
+        d["DISP"] = d["DISPONIBILIDAD"] = "v"
+    elif est_antes == "v":
+        d["DISP"] = d["DISPONIBILIDAD"] = ""          # volvieron unidades: disponible otra vez
+    sb.table("productos").update({"datos_json": json.dumps(d, ensure_ascii=False)}).eq("MODELO", modelo).execute()
+    if vendido != (est_antes == "v"):
+        a = _sync_shopify_disponibilidad(modelo, vendido)
+        if a:
+            avisos.append(a)
+    return avisos
+
+
+def vender_modelo(sb, modelo, numero, unidades):
+    """Marca vendido un modelo de un pedido: único → vendido; con varias unidades → descuenta. Lista de avisos."""
+    d = _leer_ficha(sb, modelo)
+    if d is not None and es_multiple(d):
+        return unidades_en_pedido(sb, modelo, numero, unidades)
+    a = marcar_disponibilidad(sb, modelo, True)
+    return [a] if a else []
+
+
 def liberar_modelo(sb, m, numero):
     """Devuelve a 'disponible' un modelo que sale del pedido `numero`, salvo que esté también en
-    otro pedido que siga activo. Devuelve una lista de avisos."""
+    otro pedido que siga activo. Devuelve una lista de avisos.
+    Con varias unidades: devuelve solo las que se había llevado este pedido."""
+    d = _leer_ficha(sb, m)
+    if d is not None and es_multiple(d):
+        return unidades_en_pedido(sb, m, numero, 0)
     otros = (sb.table("pedido_items").select("numero_pedido")
              .eq("modelo", m).neq("numero_pedido", numero).execute().data)
     nums = [o["numero_pedido"] for o in otros]
@@ -331,10 +401,13 @@ def liberar_modelos(sb, numero):
 def reactivar_modelos(sb, numero):
     """Al reactivar un pedido cancelado: vuelve a marcar sus modelos como vendidos."""
     avisos = []
-    items = sb.table("pedido_items").select("modelo").eq("numero_pedido", numero).execute().data
+    items = sb.table("pedido_items").select("modelo,cantidad").eq("numero_pedido", numero).execute().data
     for it in items:
         m = it.get("modelo")
         if not m:
+            continue
+        if es_multiple(_leer_ficha(sb, m)):
+            avisos += unidades_en_pedido(sb, m, numero, int(_num(it.get("cantidad"), 1)))
             continue
         info = buscar_modelo(sb, m)
         if info is None:
@@ -563,12 +636,17 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
 
     avisos = []
     nuevos_modelos = {it["modelo"] for it in items if it["modelo"]}
+    unid = {}
+    for it in items:
+        if it["modelo"]:
+            unid[it["modelo"]] = unid.get(it["modelo"], 0) + int(_num(it.get("cantidad"), 1))
     for m in sorted(modelos_viejos - nuevos_modelos):
         avisos += liberar_modelo(sb, m, numero)
     for m in sorted(nuevos_modelos - modelos_viejos):
-        aviso = marcar_disponibilidad(sb, m, True)
-        if aviso:
-            avisos.append(aviso)
+        avisos += vender_modelo(sb, m, numero, unid[m])
+    for m in sorted(nuevos_modelos & modelos_viejos):          # mismo modelo: si tiene unidades, ajusta cuántas
+        if es_multiple(_leer_ficha(sb, m)):
+            avisos += unidades_en_pedido(sb, m, numero, unid[m])
     if ped.get("status") not in SALDO_CERO and calc["total"] < _num(ped.get("anticipo")) - 0.005:
         avisos.append(f"El nuevo total (${calc['total']:,.2f}) es menor que lo ya cobrado "
                       f"(${_num(ped.get('anticipo')):,.2f}): hay un saldo a favor del cliente. Revisa los pagos.")
@@ -1349,17 +1427,26 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 avisos = []
                 apartados = set(dc["apartados"]) if dc else set()
                 if not cancelado:
+                    unid_ped, ya_visto = {}, set()          # un modelo repetido en varios renglones: se suman
                     for it in items:
-                        if it["es_sn"]:
+                        if not it["es_sn"] and it["modelo"]:
+                            unid_ped[it["modelo"]] = unid_ped.get(it["modelo"], 0) + int(_num(it.get("cantidad"), 1))
+                    for it in items:
+                        if it["es_sn"] or it["modelo"] in ya_visto:
                             continue
+                        ya_visto.add(it["modelo"])
+                        it = dict(it, cantidad=unid_ped.get(it["modelo"], it.get("cantidad")))
                         try:
                             if it["modelo"] in apartados:
                                 import reservas
                                 a = reservas.consumir(sb, it["modelo"])      # reservado → vendido
+                                if a:
+                                    avisos.append(a)
+                                if es_multiple(_leer_ficha(sb, it["modelo"])):   # las unidades ya se apartaron
+                                    avisos += unidades_en_pedido(sb, it["modelo"], numero,
+                                                                 int(_num(it.get("cantidad"), 1)), ya_descontadas=True)
                             else:
-                                a = marcar_disponibilidad(sb, it["modelo"], True)
-                            if a:
-                                avisos.append(a)
+                                avisos += vender_modelo(sb, it["modelo"], numero, int(_num(it.get("cantidad"), 1)))
                         except Exception as ex:
                             avisos.append(f"Modelo {it['modelo']}: no se pudo marcar como vendido ({ex}).")
                 elif dc:
@@ -1488,7 +1575,7 @@ def tab_pedidos(sb, user):
         _vista_lista_pedidos(sb, user, ve_costos)
         return
     volver_a = ss.get("vp_volver_a")
-    if st.button("← Volver a " + ("Por facturar" if volver_a == "Por facturar" else "la lista de pedidos"),
+    if st.button("← Volver a " + (volver_a if volver_a in ("Por facturar", "Por cobrar") else "la lista de pedidos"),
                  key="vp_volver"):
         ss.pop("vp_abierto", None)
         if ss.pop("vp_volver_a", None):
@@ -2087,6 +2174,14 @@ def render_ventas(sb, user):
             secciones.insert(secciones.index(("Pedidos", tab_pedidos)) + 1, ("Por facturar", tab_por_facturar))
     except Exception as ex:
         st.caption(f"Por facturar no disponible: {ex}")
+    try:
+        from cobranza import ROLES_COBRAR, tab_por_cobrar
+        if user["role"] in ROLES_COBRAR or user["role"] == "Dios":
+            nombres = [n for n, _ in secciones]
+            pos = nombres.index("Por facturar") + 1 if "Por facturar" in nombres else nombres.index("Pedidos") + 1
+            secciones.insert(pos, ("Por cobrar", tab_por_cobrar))
+    except Exception as ex:
+        st.caption(f"Por cobrar no disponible: {ex}")
     # «Resumen mensual» se movió a la sección «Reportes» (reportes.py)
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))

@@ -474,9 +474,20 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        disp_opts = ["Disponible (vacío)", "v - VENDIDO", "r - RESERVADO (cotización)"]
        _disp_prev = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", "")) or "").strip().lower()
        disp_idx = {"v": 1, "r": 2}.get(_disp_prev, 0)
-       disp_sel = st.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp",
-                               help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
+       c_disp, c_cant = st.columns([3, 1])
+       disp_sel = c_disp.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp",
+                                   help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
        disponibilidad = "v" if "VENDIDO" in disp_sel else ("r" if "RESERVADO" in disp_sel else "")
+       # CANTIDAD: unidades que quedan. Con más de 1, cada pedido descuenta las que vende; al llegar a 0 queda vendido.
+       v_cantidad = c_cant.text_input("CANTIDAD", value=str(datos_previos.get("CANTIDAD", "1")), key=f"{prefix}_cantidad",
+                                      help="Unidades disponibles. Si hay más de una, cada pedido descuenta las que "
+                                           "vende y al llegar a 0 la ficha queda VENDIDA sola. Si cancelan el pedido, vuelven.")
+       cantidad = max(int(to_float(v_cantidad, 1.0)), 0)
+       _ped_unid = datos_previos.get("UNIDADES_PEDIDOS") or {}
+       if _ped_unid:
+           c_cant.caption("Vendidas en pedidos: " + ", ".join(f"{n}: {u}" for n, u in sorted(_ped_unid.items())))
+       if cantidad <= 0 and (_ped_unid or to_float(datos_previos.get("CANTIDAD"), 1.0) > 1):
+           disponibilidad = "v"                  # sin unidades: vendida
 
 
        ubicacion_opts = ["1 - Showroom", "2 - Santa Fe", "3 - Antara", "4 - Lilly", "5 - Bodega"]
@@ -841,8 +852,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        cp_pct = (cp_utilidad / cp_sin_iva * 100.0) if ok(cp_utilidad, cp_sin_iva) and cp_sin_iva > 0 else None
        mostrar_calculado("C/P % DE UTILIDAD (%)", cp_pct, f"{prefix}_cp_pct",
                          "(C/P UTILIDAD / C/P PRECIO SIN IVA) * 100")
-       v_cantidad = st.text_input("CANTIDAD", value=str(datos_previos.get("CANTIDAD", "1")), key=f"{prefix}_cantidad")
-       cantidad = int(to_float(v_cantidad, 1.0))
        total_cp = (pvcp_red * cantidad) if ok(pvcp_red) else None
        mostrar_calculado("TOTAL ($)", total_cp, f"{prefix}_total_cp",
                          "PRECIO CASA PALACIO CON IVA REDONDEADO * CANTIDAD")
@@ -926,7 +935,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "UTILIDAD_VIRIATHUS_CON_COMISION": num(util_vir_con_com),
            "PRECIO_CP_CON_IVA_CALCULADO": num(pvcp_iva), "CP_PRECIO_REDONDEADO": num(pvcp_red),
            "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
-           "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp)
+           "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp),
+           **({"UNIDADES_PEDIDOS": _ped_unid} if _ped_unid else {})
        }
 
 
