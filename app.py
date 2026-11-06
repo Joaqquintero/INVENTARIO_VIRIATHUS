@@ -554,7 +554,8 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    st.divider()
    st.header("3. SECCIÓN COMPRA")
    pago_opts = ["1 - EFECTIVO", "2 - TRANSFERENCIA"]
-   pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY", "6 - ENSALADA DE IDEAS"]
+   pago_quien_opts = ["1 - CAJA", "2 - ERNESTO", "3 - VIRIATO", "4 - CLAUDIA", "5 - MARY", "6 - ENSALADA DE IDEAS",
+                      "7 - CAJA AUXILIAR"]
 
 
    def _idx(opciones, valor):
@@ -1111,6 +1112,12 @@ if puede(user, "shopify_botones"):
 try:
    import precios as _precios
    _precios.render_aviso(supabase, user)
+except Exception:
+   pass
+# Pedidos con saldo de más de 30 días (cobranza.py)
+try:
+   import cobranza as _cobranza
+   _cobranza.render_aviso(supabase, user)
 except Exception:
    pass
 # Consignaciones vendidas por pagar (pendientes.py)

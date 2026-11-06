@@ -127,6 +127,18 @@ def medio_de_forma(fp):
     return "efectivo" if "EFECTIVO" in str(fp or "").upper() else "transferencia"
 
 
+def es_auxiliar(texto):
+    """«7 - CAJA AUXILIAR» (quién pagó) o «CAJA AUXILIAR» (banco / caja de un cobro) → Caja · auxiliar."""
+    return "AUXILIAR" in str(texto or "").upper()
+
+
+def cuenta_medio_de_ficha(qp, fp):
+    """(cuenta, medio) de un costo de la ficha según «Quién pagó» y «Forma de pago»."""
+    if es_auxiliar(qp):
+        return CAJA, AUX
+    return normalizar(cuenta_de_quien(qp), medio_de_forma(fp))
+
+
 def cuenta_de_banco(banco):
     t = str(banco or "").upper()
     if "CLAU" in t:
@@ -140,6 +152,8 @@ def cuenta_de_banco(banco):
 
 def cuenta_de_venta(forma_pago, banco_caja):
     """(cuenta, medio) de un cobro de pedido."""
+    if es_auxiliar(banco_caja):
+        return CAJA, AUX
     if str(forma_pago or "").strip().lower().startswith("efectivo"):
         return CAJA, "efectivo"
     return cuenta_de_banco(banco_caja), "transferencia"
@@ -238,11 +252,12 @@ def _bloque(clave, tipo, b, costo, texto):
     if b.get("pend"):
         return None
     if b.get("pagado_monto") is not None:
-        return (clave, tipo, *normalizar(b.get("pagado_cuenta") or cuenta_de_quien(b.get("qp")),
-                                         b.get("pagado_medio") or medio_de_forma(b.get("fp"))),
-                round(_num(b.get("pagado_monto")), 2), texto)
-    return (clave, tipo, *normalizar(cuenta_de_quien(b.get("qp")), medio_de_forma(b.get("fp"))),
-            round(_num(costo), 2), texto)
+        if b.get("pagado_cuenta"):
+            cm = normalizar(b["pagado_cuenta"], b.get("pagado_medio") or medio_de_forma(b.get("fp")))
+        else:
+            cm = cuenta_medio_de_ficha(b.get("qp"), b.get("fp"))
+        return (clave, tipo, *cm, round(_num(b.get("pagado_monto")), 2), texto)
+    return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), round(_num(costo), 2), texto)
 
 
 def _bloques(datos):
@@ -339,7 +354,9 @@ def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
                                + (" (pasó a pendiente por pagar)" if nuevo_b is None and _es_pendiente(nuevos, clave) else "")
                                + " · " + base["detalle"])
         # Lo que se pasó a Caja · auxiliar (compras viejas) cuenta como ya cargado en Caja · efectivo: no se mueve
-        aux = (CAJA, AUX) if destino == (CAJA, "efectivo") else None
+        # (salvo que la ficha dijera «7 - CAJA AUXILIAR» y ahora diga Caja: ahí sí se pasa a efectivo)
+        era_aux = clave in antes and tuple(antes[clave][2:4]) == (CAJA, AUX)
+        aux = (CAJA, AUX) if destino == (CAJA, "efectivo") and not era_aux else None
         # Lo ya restado que quedó en otra cuenta (cambió quién pagó o la forma de pago) se devuelve allá
         for (cta, med), suma in ya.items():
             if (cta, med) not in (destino, aux) and abs(suma) > 0.004:
