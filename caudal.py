@@ -16,6 +16,9 @@ De dónde salen los movimientos:
     efectivo o transferencia según la forma de pago. Solo cuenta lo que se carga o cambia desde el encendido (si una compra vieja pasa de $5,000 a $6,000,
     se resta $1,000). «Ponerse al día» carga de una vez los costos completos de todas las fichas.
   * MANUALES: traspasos (Caja → Ernesto, o efectivo → transferencia), entradas y gastos.
+  * CAJA · AUXILIAR: compras viejas que no se sabe bien quién pagó (se pasaron ahí desde Caja · efectivo). Se ve
+    en la tarjeta de Caja pero NO suma al total: Caja · efectivo es lo que de verdad hay en la caja. Si se cambia el
+    costo de una de esas fichas, lo ya cargado en auxiliar cuenta como pagado (no se vuelve a cobrar a efectivo).
   * APARTADOS (pendientes.py): plata separada en una cuenta para pagar varios pendientes. No es un movimiento: la
     tarjeta muestra lo LIBRE (saldo − apartado). Cada pago desde un apartado es una sola línea en Movimientos.
 Los movimientos no se borran: se anulan (quién, cuándo y por qué).
@@ -38,8 +41,11 @@ ROLES_CAUDAL = _roles("caudal")
 CAJA, ENSALADA = "Caja", "Ensalada de Ideas"
 CUENTAS = (CAJA, ENSALADA, "Ernesto", "Viriato", "Claudia", "Mary")
 MEDIOS = ("efectivo", "transferencia")
-# Caja es solo efectivo y Ensalada de Ideas solo banco; las personas tienen los dos
-MEDIOS_DE = {CAJA: ("efectivo",), ENSALADA: ("transferencia",)}
+AUX = "auxiliar"
+# Caja: efectivo (lo que de verdad hay en caja) y auxiliar (cosas viejas que no se sabe bien quién pagó: NO suma al
+# total de Caja). Ensalada de Ideas solo banco; las personas tienen efectivo y transferencia.
+MEDIOS_DE = {CAJA: ("efectivo", AUX), ENSALADA: ("transferencia",)}
+TODOS_MEDIOS = MEDIOS + (AUX,)
 
 
 def normalizar(cuenta, medio):
@@ -332,13 +338,23 @@ def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
             base["detalle"] = (f"costo {dinero(costo_antes)} → {dinero(costo_nuevo)}"
                                + (" (pasó a pendiente por pagar)" if nuevo_b is None and _es_pendiente(nuevos, clave) else "")
                                + " · " + base["detalle"])
+        # Lo que se pasó a Caja · auxiliar (compras viejas) cuenta como ya cargado en Caja · efectivo: no se mueve
+        aux = (CAJA, AUX) if destino == (CAJA, "efectivo") else None
         # Lo ya restado que quedó en otra cuenta (cambió quién pagó o la forma de pago) se devuelve allá
         for (cta, med), suma in ya.items():
-            if (cta, med) != destino and abs(suma) > 0.004:
+            if (cta, med) not in (destino, aux) and abs(suma) > 0.004:
                 filas.append({**base, "cuenta": cta, "medio": med, "monto": round(-suma, 2),
                               "detalle": base["detalle"] + (" · cambió quién pagó o la forma de pago" if destino else "")})
-        en_destino = ya.get(destino, 0.0) if destino else 0.0
+        en_aux = ya.get(aux, 0.0) if aux else 0.0
+        en_destino = (ya.get(destino, 0.0) if destino else 0.0) + en_aux
         delta = round(objetivo - en_destino, 2)
+        if destino and delta > 0.004 and en_aux < -0.004:
+            # Bajó el costo y parte está en auxiliar: primero se devuelve lo cargado en efectivo, el resto al auxiliar
+            en_ef = min(ya.get(destino, 0.0), 0.0)
+            al_aux = round(min(max(delta + en_ef, 0.0), -en_aux), 2)
+            if al_aux > 0.004:
+                filas.append({**base, "cuenta": CAJA, "medio": AUX, "monto": al_aux})
+                delta = round(delta - al_aux, 2)
         if destino and abs(delta) > 0.004:
             filas.append({**base, "cuenta": destino[0], "medio": destino[1], "monto": delta})
     _insertar(sb, filas)
@@ -477,11 +493,11 @@ def movimientos(sb, inicio):
 
 
 def saldos(movs):
-    s = {c: {"efectivo": 0.0, "transferencia": 0.0} for c in CUENTAS}
+    s = {c: {md: 0.0 for md in TODOS_MEDIOS} for c in CUENTAS}
     for m in movs:
         if m.get("anulado") or m.get("cuenta") not in s:
             continue
-        s[m["cuenta"]][m.get("medio") if m.get("medio") in MEDIOS else "transferencia"] += _num(m.get("monto"))
+        s[m["cuenta"]][m.get("medio") if m.get("medio") in TODOS_MEDIOS else "transferencia"] += _num(m.get("monto"))
     return s
 
 
@@ -497,14 +513,17 @@ def _tarjetas(s, apartado=None):
     apartado = apartado or {}
     cols = st.columns(len(CUENTAS))
     for col, c in zip(cols, CUENTAS):
-        ef, tr = s[c]["efectivo"], s[c]["transferencia"]
-        tot = ef + tr
+        ef, tr, aux = s[c]["efectivo"], s[c]["transferencia"], s[c].get(AUX, 0.0)
+        tot = ef + tr                                  # el auxiliar NO suma: no es plata que esté en la caja
         ap = sum(v for (cta, _), v in apartado.items() if cta == c)
         medios = MEDIOS_DE.get(c, MEDIOS)
         fila_ef = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Efectivo</span>
   <span style="color:{_color(ef)};font-variant-numeric:tabular-nums">{dinero(ef)}</span></div>""" if "efectivo" in medios else ""
         fila_tr = f"""<div style="display:flex;justify-content:space-between;font-size:.95rem;"><span style="opacity:.75">Transferencia</span>
   <span style="color:{_color(tr)};font-variant-numeric:tabular-nums">{dinero(tr)}</span></div>""" if "transferencia" in medios else ""
+        fila_aux = f"""<div style="display:flex;justify-content:space-between;font-size:.85rem;opacity:.8;" title="Cosas viejas que no se sabe bien quién pagó. No suma al total.">
+  <span style="opacity:.75">Auxiliar <span style="font-size:.72rem">(no suma)</span></span>
+  <span style="color:{_color(aux)};font-variant-numeric:tabular-nums">{dinero(aux)}</span></div>""" if AUX in medios else ""
         fila_ap = (f"""<div style="font-size:.78rem;opacity:.8;text-align:right;margin-top:2px;">
   <span style="color:{AZUL}">📦 Apartado {dinero(ap)}</span> · Total {dinero(tot)}</div>""" if ap > 0.004 else "")
         col.markdown(f"""
@@ -512,6 +531,7 @@ def _tarjetas(s, apartado=None):
  <div style="font-size:1.35rem;font-weight:600;margin-bottom:8px;">{c}</div>
  {fila_ef}
  {fila_tr}
+ {fila_aux}
  <div style="border-top:1px solid rgba(160,150,135,.35);margin-top:8px;padding-top:8px;display:flex;justify-content:space-between;align-items:baseline;">
   <span style="opacity:.75;font-size:.8rem;letter-spacing:1px">{'LIBRE' if ap > 0.004 else 'TOTAL'}</span>
   <span style="color:{_color(tot - ap)};font-size:1.3rem;font-weight:600;font-variant-numeric:tabular-nums">{dinero(tot - ap)}</span></div>

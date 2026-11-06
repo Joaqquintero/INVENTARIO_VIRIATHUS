@@ -452,7 +452,7 @@ def pagar(sb, ids, cuenta, medio, fecha, usuario, apartado=None):
                     b["pagado_info"] = f"{fecha_d:%d/%m/%Y} · {cuenta} · {medio} · {usuario}"
                     b["pagado_cuenta"], b["pagado_medio"] = cuenta, medio
                     b["qp"] = QUIEN_DE_CUENTA.get(cuenta, b.get("qp"))
-                    b["fp"] = "1 - EFECTIVO" if medio == "efectivo" else "2 - TRANSFERENCIA"
+                    b["fp"] = "1 - EFECTIVO" if medio in ("efectivo", "auxiliar") else "2 - TRANSFERENCIA"
                     b[LISTA_DE_TIPO[tipo][1]] = _fecha_ficha(fecha_d)
                 _ficha_bloque(sb, f, _pagado)
         except Exception:
