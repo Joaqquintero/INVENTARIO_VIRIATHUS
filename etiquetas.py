@@ -29,7 +29,7 @@ ROLLOS = {
 }
 LIMITE_ETIQUETAS = 500
 TAM_PRECIO = 10.0      # tamaño del precio en la etiqueta (pt)
-MARGEN_MM = 5.0        # margen que la impresora no imprime, por lado (ajustable en pantalla)
+MARGEN_MM = 2.5        # margen que la impresora no imprime, por lado (ajustable en pantalla)
 
 
 def modelo_valido(m):
@@ -335,7 +335,7 @@ def render_etiquetas(sb):
                             key="et_barra", help="Más fino = código más corto. Por debajo de 0.254 mm los lectores empiezan a fallar.")
     alto = p2.number_input("Alto del código (mm)", min_value=4.0, max_value=20.0, value=7.0, step=0.5, key="et_alto",
                            help="Los lectores leen bien desde unos 6 mm de alto.")
-    tam_nombre = p3.number_input("Tamaño máximo del texto (pt)", min_value=5.0, max_value=12.0, value=7.0, step=0.5,
+    tam_nombre = p3.number_input("Tamaño máximo del texto (pt)", min_value=5.0, max_value=12.0, value=11.0, step=0.5,
                                  key="et_tam_nombre",
                                  help="El texto empieza con este tamaño y se achica solo hasta que entra todo "
                                       "(mínimo 4.5 pt; si ni así entra, se corta con «…»).")
