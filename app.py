@@ -356,9 +356,11 @@ def _sesiones_abiertas():
        return None
 
 
-def comprimir_foto(datos, lado_max=1600, calidad=85):
+def comprimir_foto(datos, lado_max=1000, calidad=65):
    """Deja la foto liviana antes de subirla: gira según la orientación del celular, la reduce a máximo
-   `lado_max` px por lado y la guarda como JPEG de buena calidad (convierte PNG/WEBP de verdad a JPG).
+   `lado_max` px por lado y la guarda como JPEG (convierte PNG/WEBP de verdad a JPG). 1000 px y calidad 65
+   se ven bien en el teléfono y en la página del QR, y pesan ~20% de lo que pesaban con 1600 px / 85
+   (~115 KB por foto: ~4,500 fotos en medio GB del plan gratis de Supabase).
    Devuelve (bytes_jpeg, kb_antes, kb_despues)."""
    import io
    from PIL import Image, ImageOps
