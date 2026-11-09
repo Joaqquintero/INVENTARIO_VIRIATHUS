@@ -479,15 +479,24 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                                    help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
        disponibilidad = "v" if "VENDIDO" in disp_sel else ("r" if "RESERVADO" in disp_sel else "")
        # CANTIDAD: unidades que quedan. Con más de 1, cada pedido descuenta las que vende; al llegar a 0 queda vendido.
-       v_cantidad = c_cant.text_input("CANTIDAD", value=str(datos_previos.get("CANTIDAD", "1")), key=f"{prefix}_cantidad",
-                                      help="Unidades disponibles. Si hay más de una, cada pedido descuenta las que "
-                                           "vende y al llegar a 0 la ficha queda VENDIDA sola. Si cancelan el pedido, vuelven.")
-       cantidad = max(int(to_float(v_cantidad, 1.0)), 0)
+       # Regla: VENDIDO = 0 unidades; disponible o reservado = al menos 1.
        _ped_unid = datos_previos.get("UNIDADES_PEDIDOS") or {}
+       _cant_prev = str(datos_previos.get("CANTIDAD", "1") if str(datos_previos.get("CANTIDAD", "")).strip() else "1")
+       if _disp_prev == "v" and not _ped_unid and to_float(_cant_prev, 1.0) <= 1:
+           _cant_prev = "0"                      # fichas viejas vendidas que quedaron con 1
+       v_cantidad = c_cant.text_input("CANTIDAD", value=_cant_prev, key=f"{prefix}_cantidad",
+                                      help="Unidades disponibles. VENDIDO = 0. Si hay más de una, cada pedido descuenta las "
+                                           "que vende y al llegar a 0 la ficha queda VENDIDA sola. Si cancelan el pedido, vuelven.")
+       cantidad = max(int(to_float(v_cantidad, 1.0)), 0)
        if _ped_unid:
            c_cant.caption("Vendidas en pedidos: " + ", ".join(f"{n}: {u}" for n, u in sorted(_ped_unid.items())))
-       if cantidad <= 0 and (_ped_unid or to_float(datos_previos.get("CANTIDAD"), 1.0) > 1):
-           disponibilidad = "v"                  # sin unidades: vendida
+       if disponibilidad == "v":
+           cantidad = 0                          # vendido: no quedan unidades
+       elif cantidad <= 0 and not (disponibilidad == "r" and _disp_prev == "r"):
+           if _disp_prev == "v":
+               cantidad = 1                      # la pasaron de vendida a disponible: al menos 1
+           else:
+               disponibilidad = "v"              # pusieron 0 unidades: vendida
 
 
        ubicacion_opts = ["1 - Showroom", "2 - Santa Fe", "3 - Antara", "4 - Lilly", "5 - Bodega"]
@@ -1234,6 +1243,81 @@ def modal_editar_completo(mod_p, pdata):
    render_formulario_producto(pdata, modelo_existente=mod_p)
 
 
+# ---------- Vista de LISTA de Consultar / Buscar ----------
+def _columnas(spec):
+   """st.columns con todo centrado a lo alto; si el Streamlit instalado es viejo, sin centrar."""
+   try:
+       return st.columns(spec, vertical_alignment="center")
+   except TypeError:
+       return st.columns(spec)
+
+
+_ANCHOS_LISTA = [0.9, 0.7, 3.2, 1.6, 1.3, 0.45, 0.45, 0.45, 0.45]
+
+
+def _render_lista_busqueda(productos, ventas_pag):
+   """Una fila por producto: modelo, foto chica, nombre, estado, redondeo showroom y botones de solo ícono."""
+   cab = _columnas(_ANCHOS_LISTA)
+   for c, t in zip(cab, ["Modelo", "Foto", "Nombre", "Estado", "Redondeo showroom"]):
+       c.caption(t)
+   for idx, item in enumerate(productos):
+       mod_p = item.get("MODELO")
+       img_url = item.get("RUTA_IMAGEN")
+       raw = item.get("datos_json", "{}")
+       try:
+           pdata = json.loads(raw) if isinstance(raw, str) else (raw if isinstance(raw, dict) else {})
+       except (TypeError, ValueError):
+           pdata = {}
+       disp = str(pdata.get("DISP", pdata.get("DISPONIBILIDAD", ""))).strip().lower()
+       is_vendido = disp in ("v", "r")             # para Shopify, reservado = agotado (igual que en las tarjetas)
+
+       c_mod, c_foto, c_nom, c_est, c_pre, c_drv, c_edi, c_shp, c_syn = _columnas(_ANCHOS_LISTA)
+       c_mod.markdown(f"**{mod_p}**")
+       if img_url and str(img_url).startswith("http"):
+           c_foto.image(img_url, width=56)
+       else:
+           c_foto.caption("—")
+       c_nom.write(str(pdata.get("NOMBRE") or "Sin nombre").strip())
+       if disp == "r":
+           c_est.markdown(":orange[**Reservado**]")
+       elif disp == "v":
+           _venta = ventas_pag.get(str(mod_p).strip())
+           c_est.markdown(":red[**Vendido**]" + (f"  \n:gray[{_venta}]" if _venta else ""))
+       else:
+           _consig = " ".join(str(pdata.get("CONSIGNADOR") or "").split()) if pdata.get("CONSIGNACION") else ""
+           c_est.markdown(":green[**Disponible**]" + (f"  \n:gray[Consig. {_consig}]" if _consig else ""))
+       _precio = to_float(pdata.get("REDONDEO_SHOWROOM", 0))
+       c_pre.write(f"${_precio:,.2f}" if _precio else "—")
+
+       # Botones de solo ícono (el texto aparece al pasar el mouse)
+       c_drv.link_button("📷", f"https://drive.google.com/drive/folders/{ID_MASTER_FOTOS}?q={mod_p}",
+                         help="Fotos en Google Drive", use_container_width=True, key=f"l_drv_{mod_p}_{idx}")
+       if puede(user, "editar_ficha"):
+           if c_edi.button("✏️", key=f"l_edit_{mod_p}_{idx}", help="Editar ficha completa", use_container_width=True):
+               modal_editar_completo(mod_p, pdata)
+       mensaje = None                              # lo que respondan Shopify va debajo de la fila, a todo lo ancho
+       if puede(user, "shopify_botones"):
+           if c_shp.button("🛍️", key=f"l_shop_{mod_p}_{idx}", help="Crear borrador en Shopify", use_container_width=True):
+               with st.spinner("Enviando a Shopify..."):
+                   ok, msg, url_shop = crear_borrador_shopify(mod_p, pdata)
+               if ok:
+                   registrar_envio(supabase, mod_p, pdata, ["nombre", "desc", "precio"])
+               mensaje = ("success" if ok else "warning", msg, url_shop)
+           if c_syn.button("🔄", key=f"l_sync_{mod_p}_{idx}", help="Sincronizar con Shopify", use_container_width=True):
+               with st.spinner("Sincronizando con Shopify..."):
+                   est_s, msg_s = sincronizar_ficha(supabase, mod_p, is_vendido)
+               if est_s == "no_existe":
+                   mensaje = ("info", "Este producto aún no está en Shopify: usa 🛍️ «Crear borrador en Shopify».", None)
+               else:
+                   mensaje = ("success" if est_s == "ok" else "warning", msg_s, None)
+       if mensaje:
+           tipo, texto, url = mensaje
+           getattr(st, tipo)(f"**{mod_p}:** {texto}")
+           if url:
+               st.link_button("Abrir en Shopify", url, key=f"l_lnk_{mod_p}_{idx}")
+       st.markdown("<hr style='margin:2px 0;opacity:.25'>", unsafe_allow_html=True)
+
+
 # TAB 1: BÚSQUEDA
 if tab1 is not None:
    with tab1:
@@ -1252,6 +1336,10 @@ if tab1 is not None:
               "Solo sin redondeo showroom (disponibles y reservados)", key="filtro_sin_precio",
               help="Muestra solo los productos disponibles o reservados con el REDONDEO SHOWROOM en 0 o vacío. "
                    "Al ponerle precio y guardar la ficha, el producto sale de esta lista.")
+
+      # Cómo se ven los resultados: tarjetas (3 por fila, con todo) o lista (una fila por producto, compacta)
+      _vista_lista = st.radio("Vista", ["▦ Tarjetas", "☰ Lista"], horizontal=True, key="vista_buscar",
+                              label_visibility="collapsed") == "☰ Lista"
 
       modo_rango = rango_desde.isdigit() and rango_hasta.isdigit()
       busqueda = f"{rango_desde} a {rango_hasta}" if modo_rango else busqueda_raw.strip()
@@ -1353,7 +1441,7 @@ if tab1 is not None:
 
               st.divider()
               cols_por_fila = 3
-              cols = st.columns(cols_por_fila)
+              cols = None if _vista_lista else st.columns(cols_por_fila)
               # Precio al que se vendió (con descuento) de los VENDIDOS de esta página: una consulta para todos
               _vendidos_pag = []
               for _it in productos:
@@ -1366,7 +1454,10 @@ if tab1 is not None:
                       _vendidos_pag.append(_it.get("MODELO"))
               _ventas_pag = ventas_de_modelos(_vendidos_pag)
           
-              for idx, item in enumerate(productos):
+              if _vista_lista:
+                  _render_lista_busqueda(productos, _ventas_pag)
+
+              for idx, item in enumerate([] if _vista_lista else productos):     # vista de tarjetas
                   mod_p = item.get("MODELO")
                   img_url = item.get("RUTA_IMAGEN")
               
