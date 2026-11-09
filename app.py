@@ -297,6 +297,20 @@ def num(v):
 
 
 # --- FUNCIONES AUXILIARES DE CÁLCULO Y LIMPIEZA ---
+def palabras_busqueda(texto):
+   """Texto buscado → patrones ilike sin acentos (igual que la app): en las palabras de 4 letras o más cada vocal
+   vale por cualquier letra, así «lampara» encuentra «lámpara» y «credénza» encuentra «credenza».
+   Hasta 5 palabras; las de 1 letra no cuentan."""
+   pals = []
+   for w in str(texto).split():
+       w = re.sub(r"[%_*\\]", "", w)                  # los comodines de ilike no se pueden buscar
+       if len(w) >= 4:
+           w = re.sub(r"[aeiouáéíóúü]", "_", w, flags=re.IGNORECASE)
+       if len(w) >= 2:
+           pals.append(w)
+   return pals[:5] or [re.sub(r"[%_*\\]", "", str(texto).strip())]
+
+
 def to_float(val, default=0.0):
    if val is None or val == "":
        return default
@@ -1367,10 +1381,16 @@ if tab1 is not None:
                   limite_sup = str(int(rango_hasta) + 1)
                   query = supabase.table("productos").select("*", count="exact")
                   query = query.gte("MODELO", rango_desde).lt("MODELO", limite_sup).order("MODELO")
-              else:
-                  busqueda_clean = re.sub(r'[%"\',()]', '', busqueda)
+              elif busqueda.isdigit():
+                  # Solo números: el modelo (o un número que aparezca en la ficha), como siempre
                   query = supabase.table("productos").select("*", count="exact")
-                  query = query.or_(f"MODELO.ilike.%{busqueda_clean}%,datos_json.ilike.%{busqueda_clean}%")
+                  query = query.or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%")
+              else:
+                  # Texto: cada palabra tiene que aparecer en la ficha, sin importar acentos ni el orden
+                  # («lampara bronce» encuentra «Lámpara de bronce» y «bronce, lámpara»)
+                  query = supabase.table("productos").select("*", count="exact")
+                  for _pal in palabras_busqueda(busqueda):
+                      query = query.ilike("datos_json", f"%{_pal}%")
           
               resp, ultimo_error = None, None
               if solo_sin_precio:
