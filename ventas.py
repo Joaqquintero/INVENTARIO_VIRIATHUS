@@ -293,6 +293,10 @@ def marcar_disponibilidad(sb, modelo, vendido):
         return f"Modelo {modelo}: tiene cantidad > 1 en inventario, no se marcó como vendido."
     d["DISPONIBILIDAD"] = "v" if vendido else ""
     d["DISP"] = "v" if vendido else ""
+    if vendido:
+        d["CANTIDAD"] = 0                         # vendido = 0 unidades
+    elif _num(d.get("CANTIDAD"), 1.0) <= 0:
+        d["CANTIDAD"] = 1                         # disponible = al menos 1
     sb.table("productos").update(
         {"datos_json": json.dumps(d, ensure_ascii=False)}).eq("MODELO", modelo).execute()
     return _sync_shopify_disponibilidad(modelo, vendido)
@@ -309,8 +313,8 @@ def _leer_ficha(sb, modelo):
 
 
 def es_multiple(d):
-    """¿Producto con varias unidades? (CANTIDAD distinta de 1 —más de 1, o 0 porque se agotó— o ya vendió unidades en pedidos)."""
-    return bool(d) and (_num(d.get("CANTIDAD"), 1.0) != 1 or bool(d.get("UNIDADES_PEDIDOS")))
+    """¿Producto con varias unidades? (CANTIDAD > 1, o ya vendió unidades en pedidos)."""
+    return bool(d) and (_num(d.get("CANTIDAD"), 1.0) > 1 or bool(d.get("UNIDADES_PEDIDOS")))
 
 
 def unidades_en_pedido(sb, modelo, numero, unidades, ya_descontadas=False):
@@ -1306,8 +1310,9 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         ss["vt_npagos"] += 1
         st.rerun()
     st.caption("Lo cobrado es la suma de los pagos: si es menor al total, queda como anticipo y la diferencia como saldo. "
-               "Si eliges forma de pago y dejas el monto en 0, se registra el total. Si el pedido está pendiente, "
-               "deja la forma de pago vacía.")
+               "Si el pedido está PAGADO y eliges forma de pago con el monto en 0, se registra el total. "
+               "Si está pendiente de pago, solo se registra lo que de verdad pagó (el anticipo); con monto 0 no se "
+               "registra ningún cobro y el total queda como saldo. Solo lo cobrado entra a Caudal.")
 
     # ---- Estado ----
     st.divider()
@@ -1320,6 +1325,12 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         status = _select_con_otro("STATUS *", catalogo(sb, "status"), k("status"))
     observaciones = st.text_area("NOTAS ADICIONALES", key=k("obs"), height=70)
 
+    # Pendiente de pago: un cobro sin monto NO es un pago (solo cuenta lo que de verdad pagó, el anticipo).
+    # Antes «forma elegida + monto 0» registraba el total como cobrado aunque el cliente no hubiera pagado,
+    # y ese total entraba a Caudal.
+    pagado = es_pagado(status, estado)
+    if not pagado:
+        pagos = [p for p in pagos if p["monto"] > 0]
     # Totales con lo ya cobrado (pagos capturados) y el status elegido
     anticipo_ef = anticipo_efectivo(anticipo, pagos, calc["total"])
     if es_pagado(status, estado) and not any(p["monto"] > 0 for p in pagos):
@@ -1382,11 +1393,15 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                     errores.append(texto_reservado(sb, it["modelo"]) + ".")
                 # apartado por OTRA cotización: se puede vender; en aquella queda dado de baja
 
-        if len(pagos) == 1 and pagos[0]["monto"] == 0:
-            pagos[0]["monto"] = float(calc["total"])
+        if pagado and len(pagos) == 1 and pagos[0]["monto"] == 0:
+            pagos[0]["monto"] = float(calc["total"])          # pagado sin monto: se cobró el total
         pagos_validos = [p for p in pagos if p["monto"] > 0]
-        if sum(p["monto"] for p in pagos_validos) > calc["total"] + 0.01:
+        cobrado = round(sum(p["monto"] for p in pagos_validos), 2)
+        if cobrado > calc["total"] + 0.01:
             errores.append("La suma de los pagos es mayor que el total.")
+        elif not pagado and not cancelado and calc["total"] > 0 and cobrado >= calc["total"] - 0.01:
+            errores.append("El pedido está como pendiente de pago, pero los cobros cubren el total. Si ya pagó todo, "
+                           "cambia el status a «Pagado»; si no, pon en el monto solo lo que pagó (o déjalo vacío).")
 
         if errores:
             for e in errores:
@@ -1439,10 +1454,14 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                         try:
                             if it["modelo"] in apartados:
                                 import reservas
+                                d0 = _leer_ficha(sb, it["modelo"]) or {}
+                                # varias unidades (o se apartaron todas y quedó en 0): las unidades ya se descontaron
+                                multi = es_multiple(d0) or (str(d0.get("CANTIDAD", "")).strip() != ""
+                                                            and _num(d0.get("CANTIDAD"), 1.0) <= 0)
                                 a = reservas.consumir(sb, it["modelo"])      # reservado → vendido
                                 if a:
                                     avisos.append(a)
-                                if es_multiple(_leer_ficha(sb, it["modelo"])):   # las unidades ya se apartaron
+                                if multi:
                                     avisos += unidades_en_pedido(sb, it["modelo"], numero,
                                                                  int(_num(it.get("cantidad"), 1)), ya_descontadas=True)
                             else:
