@@ -496,7 +496,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        disp_opts = ["Disponible (vacío)", "v - VENDIDO", "r - RESERVADO (cotización)"]
        _disp_prev = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", "")) or "").strip().lower()
        disp_idx = {"v": 1, "r": 2}.get(_disp_prev, 0)
-       c_disp, c_unid, c_cant = st.columns([2.4, 1.3, 1])
+       c_disp, c_cant = st.columns([3, 1])
        disp_sel = c_disp.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp",
                                    help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
        disponibilidad = "v" if "VENDIDO" in disp_sel else ("r" if "RESERVADO" in disp_sel else "")
@@ -512,10 +512,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        # (su CANTIDAD ya está bien y puede que ya se hayan vendido algunas).
        _tenia_unid = bool(str(datos_previos.get("UNIDADES_COMPRADAS") or "").strip())
        _unid_prev = max(int(to_float(datos_previos.get("UNIDADES_COMPRADAS"), 1.0)), 1) if _tenia_unid else 1
-       v_unidades = c_unid.text_input("UNIDADES COMPRADAS", value=str(_unid_prev), key=f"{prefix}_unidades",
-                                      help="Cuántas piezas compraste en este lote. Los costos de abajo van POR PIEZA; "
-                                           "Caudal descuenta costo × unidades compradas. Pone sola la CANTIDAD.")
-       unidades_compradas = max(int(to_float(v_unidades, 1.0)), 1)
+       # El campo está más abajo, junto al costo de la Compra #1; aquí se lee lo que tiene escrito
+       # (Streamlit ya trae en session_state el valor que se escribió antes de esta vuelta)
+       unidades_compradas = max(int(to_float(st.session_state.get(f"{prefix}_unidades", _unid_prev), 1.0)), 1)
        if _tenia_unid or not is_edit:
            # CANTIDAD se mueve lo mismo que las unidades compradas (ficha nueva: 5 compradas = 5 disponibles)
            _cant_prev = str(max(int(to_float(_cant_prev, 1.0)) + unidades_compradas - _unid_prev, 0))
@@ -675,7 +674,13 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        c_prov = k1.text_input(f"PROVEEDOR DE COMPRA #{n}", value=str(d_c.get("prov", "") or ""), key=f"{prefix}_provcompra_{i_c}")
        c_fp = k2.selectbox(f"FORMA DE PAGO A COMPRA #{n}", pago_opts, index=_idx(pago_opts, d_c.get("fp")), key=f"{prefix}_fp_compra_{i_c}")
        c_qp = k3.selectbox(f"QUIÉN PAGÓ (COMPRA) #{n}", pago_quien_opts, index=_idx(pago_quien_opts, d_c.get("qp")), key=f"{prefix}_qp_compra_{i_c}")
-       k4, k5, k6 = st.columns(3)
+       if i_c == 0:       # UNIDADES COMPRADAS (del lote) junto al costo de la primera compra
+           k4, k5, k_u, k6 = st.columns([1, 1, 0.8, 1])
+           k_u.text_input("UNIDADES COMPRADAS", value=str(_unid_prev), key=f"{prefix}_unidades",
+                          help="Cuántas piezas compraste en este lote. Los costos van POR PIEZA; Caudal descuenta "
+                               "costo × unidades compradas. Pone sola la CANTIDAD.")
+       else:
+           k4, k5, k6 = st.columns(3)
        c_fadq = k4.text_input(f"FECHA ADQUISICIÓN #{n}", value=str(d_c.get("fadq", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fadq_compra_{i_c}")
        costo_prev = d_c.get("costo", "")
        c_costo = k5.text_input(f"COSTO ADQUISICIÓN #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_adq_{i_c}")
