@@ -32,6 +32,7 @@ PERMISOS = {
     "cotizar":           (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),
     "remisiones":        (DIOS, ADMIN, CONTA, FACT, INV, INV2, VEND, LOG),  # pestaña «Remisiones» (de pedido y abiertas; el PDF se arma al momento y no se guarda)
     "por_facturar":      (DIOS, ADMIN, CONTA, FACT),           # pestaña «Por facturar»
+    "por_cobrar":        (DIOS, ADMIN, CONTA, FACT),           # pestaña «Por cobrar» (pedidos con saldo) y su aviso
     "costos_rapidos":    (DIOS, ADMIN, CONTA, FACT),           # «⚡ Capturar costos pendientes»
     "resumen_mensual":   (DIOS, ADMIN, CONTA, FACT),
     "comisiones":        (DIOS, ADMIN, CONTA, FACT),

@@ -97,6 +97,10 @@ def _poner_disponibilidad(sb, modelo, vendido):
         return "cantidad"
     d["DISPONIBILIDAD"] = "v" if vendido else ""
     d["DISP"] = "v" if vendido else ""
+    if vendido:
+        d["CANTIDAD"] = 0                               # vendido = 0 unidades
+    elif _num(d.get("CANTIDAD"), 1.0) <= 0:
+        d["CANTIDAD"] = 1                               # disponible = al menos 1
     sb.table("productos").update({"datos_json": json.dumps(d, ensure_ascii=False)}).eq("MODELO", modelo).execute()
     return "ok"
 

@@ -163,7 +163,20 @@ def leer(sb, rid):
     pagos = []
     if rem[0].get("tipo") == "abierta":
         pagos = sb.table("remision_pagos").select("*").eq("remision_id", rid).order("id").execute().data or []
-    return rem[0], items, pagos
+    rem = dict(rem[0], _direccion=direccion_de_pedido(sb, rem[0]))
+    return rem, items, pagos
+
+
+def direccion_de_pedido(sb, rem):
+    """Domicilio de entrega del pedido (remisión de pedido) para el PDF, en renglones. [] si no tiene."""
+    if rem.get("tipo") != "pedido" or not rem.get("numero_pedido"):
+        return []
+    try:
+        p = (sb.table("pedidos").select("domicilio").eq("numero_pedido", int(rem["numero_pedido"]))
+             .limit(1).execute().data or [{}])[0]
+    except Exception:
+        return []
+    return [" ".join(x.split()) for x in str(p.get("domicilio") or "").splitlines() if x.strip()]
 
 
 def remision_de_pedido(sb, numero):
@@ -603,8 +616,11 @@ def generar_pdf(rem, items, pagos=(), firma=None):
         logo.hAlign = "CENTER"
         story += [logo, Spacer(1, 10)]
     f = _fecha(rem.get("fecha"))
-    izq = Table([[campo("Cliente:", rem.get("cliente"), 52, 270)],
-                 [campo("Fecha:", f.strftime("%d/%m/%Y") if f else "", 52, 120)]], colWidths=[322])
+    filas_izq = [[campo("Cliente:", rem.get("cliente"), 52, 270)]]
+    for n, linea in enumerate(rem.get("_direccion") or []):      # domicilio de entrega del pedido (si tiene)
+        filas_izq.append([campo("Dirección:" if n == 0 else "", linea, 52, 270)])
+    filas_izq.append([campo("Fecha:", f.strftime("%d/%m/%Y") if f else "", 52, 120)])
+    izq = Table(filas_izq, colWidths=[322])
     der = Table([[Paragraph("REMISIÓN", ST_TIT)], [Paragraph(escape(folio(rem)), ST_TIT)]], colWidths=[ANCHO - 340])
     for t in (izq, der):
         t.setStyle(TableStyle([("LEFTPADDING", (0, 0), (-1, -1), 0), ("RIGHTPADDING", (0, 0), (-1, -1), 0)]))

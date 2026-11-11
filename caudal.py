@@ -269,9 +269,16 @@ def _bloque(clave, tipo, b, costo, texto, unidades=1):
         else:
             cm = cuenta_medio_de_ficha(b.get("qp"), b.get("fp"))
         return (clave, tipo, *cm, round(_num(b.get("pagado_monto")), 2), texto)
+    total = round(_num(costo) * unidades, 2)
+    if _num(b.get("ant")) > 0:
+        # Con anticipo: aquí solo el anticipo (de quien pagó). El saldo vive en Pendientes con su propia referencia
+        # («ficha:<modelo>:<tipo>:<n>:saldo») y entra a Caudal como otro movimiento cuando se paga.
+        ant = round(min(_num(b.get("ant")), total), 2)
+        return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), ant,
+                texto + f" · anticipo de {dinero(total)}")
     if unidades > 1:
         texto += f" · {unidades} piezas × {dinero(_num(costo))}"
-    return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), round(_num(costo) * unidades, 2), texto)
+    return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), total, texto)
 
 
 def _bloques(datos):
@@ -361,7 +368,18 @@ def sincronizar_ficha(sb, modelo, previos, nuevos, usuario, completo=False):
         base = {"fecha": hoy, "tipo": tipo, "origen": "ficha", "referencia": ref, "usuario": usuario,
                 "concepto": f"{NOMBRE_TIPO.get(tipo, tipo.capitalize())} · Mod {modelo}",
                 "detalle": " · ".join(x for x in (texto, nombre) if x)}
-        if ya and not completo:
+        u_antes, u_ahora = unidades_compradas(previos), unidades_compradas(nuevos)
+        # Reabasto: la ficha ya tenía UNIDADES COMPRADAS y se compraron más piezas al mismo costo por pieza.
+        # (Si no lo tenía, es una ficha vieja a la que se le corrige la compra original: eso sí es corrección.)
+        reabasto = (ya and not completo and nuevo_b and clave in antes and u_ahora > u_antes
+                    and "UNIDADES_COMPRADAS" in (previos or {})
+                    and abs(costo_nuevo / u_ahora - antes[clave][4] / u_antes) < 0.01)
+        if reabasto:
+            # Es una compra nueva, no una corrección: se ve como gasto normal
+            base["concepto"] = f"Reabasto · {base['concepto']}"
+            base["detalle"] = f"+{u_ahora - u_antes} piezas × {dinero(costo_nuevo / u_ahora)} · " + " · ".join(
+                x for x in (texto.split(" · ")[0], nombre) if x)
+        elif ya and not completo:
             # Ya había algo cargado de este costo: lo que se registre ahora es una CORRECCIÓN (se ve en azul)
             costo_antes = antes[clave][4] if clave in antes else 0.0
             base["concepto"] = "Corrección · " + base["concepto"]

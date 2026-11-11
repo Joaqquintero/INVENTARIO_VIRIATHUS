@@ -248,6 +248,33 @@ def sincronizar_costos_ficha(sb, modelo, datos, usuario):
         for n, b in enumerate(datos.get(lista_k) or []):
             ref = ref_ficha(modelo, tipo, n)
             costo = round(_num(b.get("costo")) * u, 2)
+            ant = round(_num(b.get("ant")), 2)
+            if ant > 0:
+                # Con anticipo: el anticipo ya fue a Caudal; aquí queda el SALDO, con su propia referencia
+                ref_s = ref + ":saldo"
+                vistos.add(ref_s)
+                saldo = round(costo - ant, 2)
+                if b.get("saldo_pagado") is not None:
+                    if round(ant + _num(b.get("saldo_pagado")), 2) != costo:
+                        avisos.append(f"{NOMBRE_TIPO[tipo]} #{n + 1}: el saldo ya se pagó desde Pendientes "
+                                      f"(anticipo {dinero(ant)} + saldo {dinero(_num(b.get('saldo_pagado')))}); el costo "
+                                      f"nuevo ({dinero(costo)}) NO cambia Caudal. Si hubo una devolución o un pago extra, "
+                                      "regístralo a mano en Caudal (Entrada o Gasto).")
+                    continue
+                prev_s = actuales.get(ref_s)
+                if saldo <= 0:
+                    vistos.discard(ref_s)            # el anticipo cubrió todo: no queda saldo
+                    continue
+                fila = {"tipo": tipo, "modelo": modelo, "referencia": ref_s,
+                        "proveedor": " ".join(str(b.get("prov") or "").split()),
+                        "concepto": f"Saldo de {NOMBRE_TIPO[tipo].lower()} · Mod {modelo}",
+                        "detalle": f"{nombre} · costo {dinero(costo)}, anticipo {dinero(ant)}".lstrip(" ·"),
+                        "monto": saldo, "actualizado": _ahora()}
+                if prev_s is None:
+                    sb.table(TABLA).insert({**fila, "estado": PENDIENTE, "usuario": usuario}).execute()
+                elif prev_s.get("estado") in (PENDIENTE, ANULADO):
+                    sb.table(TABLA).update({**fila, "estado": PENDIENTE}).eq("id", prev_s["id"]).execute()
+                continue
             prev = actuales.get(ref)
             if b.get("pagado_monto") is not None:
                 vistos.add(ref)
@@ -283,7 +310,8 @@ def _fecha_ficha(fecha):
 def _ficha_bloque(sb, f, cambio):
     """Aplica `cambio(bloque)` al bloque de la ficha al que pertenece el pendiente `f` y guarda la ficha."""
     try:
-        _, modelo, tipo, n = str(f["referencia"]).split(":")
+        partes = str(f["referencia"]).split(":")       # ficha:<modelo>:<tipo>:<n>[:saldo]
+        _, modelo, tipo, n = partes[:4]
         lista_k = LISTA_DE_TIPO[tipo][0]
         n = int(n)
     except (ValueError, KeyError):
@@ -440,7 +468,8 @@ def pagar(sb, ids, cuenta, medio, fecha, usuario, apartado=None):
         try:
             mov = sb.table("caudal_movimientos").insert({
                 "fecha": fecha, "cuenta": cuenta, "medio": medio, "monto": -monto, "tipo": f.get("tipo"),
-                "concepto": (f"{prefijo}Pago {NOMBRE_TIPO.get(f.get('tipo'), f.get('tipo'))} · "
+                "concepto": (f"{prefijo}Pago {'saldo de ' if str(f.get('referencia') or '').endswith(':saldo') else ''}"
+                             f"{NOMBRE_TIPO.get(f.get('tipo'), f.get('tipo'))} · "
                              + (_mod(f).rstrip(" ·") or str(f.get("detalle") or "")[:80])),
                 "detalle": " · ".join(x for x in (f.get("proveedor"), f.get("detalle")) if x),
                 # costo de la ficha: la misma referencia que usa Caudal, así la ficha y Caudal cuadran
@@ -449,6 +478,12 @@ def pagar(sb, ids, cuenta, medio, fecha, usuario, apartado=None):
             sb.table(TABLA).update({"movimiento_id": (mov or [{}])[0].get("id")}).eq("id", f["id"]).execute()
             if de_ficha:
                 fecha_d = dt.date.fromisoformat(fecha)
+
+                def _saldo_pagado(b, tipo, monto=monto, fecha_d=fecha_d):
+                    # Pagó el SALDO de un costo con anticipo: no se toca quién pagó el anticipo
+                    b["saldo_pagado"] = monto
+                    b["saldo_info"] = f"{fecha_d:%d/%m/%Y} · {cuenta} · {medio} · {usuario}"
+                    b["saldo_cuenta"], b["saldo_medio"] = cuenta, medio
 
                 def _pagado(b, tipo, monto=monto, fecha_d=fecha_d):
                     b["pend"] = False
@@ -459,7 +494,7 @@ def pagar(sb, ids, cuenta, medio, fecha, usuario, apartado=None):
                                else QUIEN_DE_CUENTA.get(cuenta, b.get("qp")))
                     b["fp"] = "1 - EFECTIVO" if medio in ("efectivo", "auxiliar") else "2 - TRANSFERENCIA"
                     b[LISTA_DE_TIPO[tipo][1]] = _fecha_ficha(fecha_d)
-                _ficha_bloque(sb, f, _pagado)
+                _ficha_bloque(sb, f, _saldo_pagado if str(f["referencia"]).endswith(":saldo") else _pagado)
         except Exception:
             sb.table(TABLA).update({"estado": PENDIENTE, "pagado_en": None, "pagado_por": None, "cuenta": None,
                                     "medio": None}).eq("id", f["id"]).execute()
@@ -492,21 +527,27 @@ def deshacer_pago(sb, mov):
             except Exception:
                 pass
         if f.get("tipo") in LISTA_DE_TIPO:
+            def _saldo_otra_vez(b, tipo):
+                for k in ("saldo_pagado", "saldo_info", "saldo_cuenta", "saldo_medio"):
+                    b.pop(k, None)
+
             def _otra_vez_pendiente(b, tipo):
                 b["pend"] = True
                 b.pop("pagado_monto", None)
                 b.pop("pagado_info", None)
                 b.pop("pagado_cuenta", None)
                 b.pop("pagado_medio", None)
-            _ficha_bloque(sb, f, _otra_vez_pendiente)
+            _ficha_bloque(sb, f, _saldo_otra_vez if str(f.get("referencia") or "").endswith(":saldo")
+                          else _otra_vez_pendiente)
     _limpiar()
 
 
 # ----------------------------------------------------------------------
 # Pendientes a mano
 # ----------------------------------------------------------------------
-def crear_manual(sb, proveedor, concepto, monto, modelo, usuario):
-    """Pendiente por pagar creado a mano (cualquier deuda). Devuelve la fila."""
+def crear_manual(sb, proveedor, concepto, monto, modelo, usuario, apartado_id=None):
+    """Pendiente por pagar creado a mano (cualquier deuda). Devuelve la fila.
+    Con `apartado_id` nace dentro de ese apartado (referencia «manual:ap<id>:…»: si se deshace el apartado, se borra)."""
     import uuid
     proveedor = " ".join(str(proveedor or "").split())
     concepto = " ".join(str(concepto or "").split())
@@ -519,11 +560,13 @@ def crear_manual(sb, proveedor, concepto, monto, modelo, usuario):
     if monto <= 0:
         raise ValueError("El monto tiene que ser mayor a $0.")
     fila = sb.table(TABLA).insert({
-        "tipo": "manual", "modelo": modelo, "referencia": f"manual:{uuid.uuid4().hex[:12]}", "proveedor": proveedor,
+        "tipo": "manual", "modelo": modelo, "proveedor": proveedor,
+        "referencia": f"manual:{'ap%s:' % apartado_id if apartado_id else ''}{uuid.uuid4().hex[:12]}",
         "concepto": concepto, "detalle": concepto, "monto": monto, "estado": PENDIENTE, "usuario": usuario,
-        "actualizado": _ahora()}).execute().data[0]
-    codigos.registrar(sb, usuario, "Creó pendiente por pagar", "caudal", proveedor,
-                      f"{concepto} · ${monto:,.2f}" + (f" · Mod {modelo}" if modelo else ""))
+        "actualizado": _ahora(), **({"apartado_id": apartado_id} if apartado_id else {})}).execute().data[0]
+    if not apartado_id:
+        codigos.registrar(sb, usuario, "Creó pendiente por pagar", "caudal", proveedor,
+                          f"{concepto} · ${monto:,.2f}" + (f" · Mod {modelo}" if modelo else ""))
     _limpiar()
     return fila
 
@@ -602,6 +645,42 @@ def crear_apartado(sb, ids, nombre, cuenta, medio, usuario):
     return ap, len(filas), total
 
 
+def crear_apartado_directo(sb, nombre, cuenta, medio, renglones, usuario):
+    """Apartado nuevo con sus renglones escritos ahí mismo (sin crear antes cada pendiente).
+    renglones = [{"proveedor", "concepto", "monto", "modelo"}]. Devuelve (apartado, n, total)."""
+    import caudal
+    cuenta, medio = caudal.normalizar(cuenta, medio)
+    limpios = []
+    for i, r in enumerate(renglones, 1):
+        prov = " ".join(str(r.get("proveedor") or "").split())
+        conc = " ".join(str(r.get("concepto") or "").split())
+        monto = round(_num(r.get("monto")), 2)
+        if not (prov or conc or monto):
+            continue                                   # renglón vacío
+        if not prov or not conc or monto <= 0:
+            raise ValueError(f"Renglón {i}: falta a quién, el concepto o un monto mayor a $0.")
+        limpios.append((prov, conc, monto, str(r.get("modelo") or "").strip() or None))
+    if not limpios:
+        raise ValueError("Escribe al menos un renglón (a quién, concepto y monto).")
+    nombre = " ".join(str(nombre or "").split()) or f"Apartado {_hoy():%d/%m/%Y}"
+    ap = sb.table(APARTADOS).insert({"nombre": nombre, "cuenta": cuenta, "medio": medio, "estado": AP_ABIERTO,
+                                     "usuario": usuario}).execute().data[0]
+    try:
+        for prov, conc, monto, modelo in limpios:
+            crear_manual(sb, prov, conc, monto, modelo, usuario, apartado_id=ap["id"])
+    except Exception:
+        # que no quede un apartado a medias
+        sb.table(TABLA).update({"estado": ANULADO, "actualizado": _ahora()}).eq("apartado_id", ap["id"]).execute()
+        sb.table(APARTADOS).update({"estado": AP_DESHECHO, "cerrado_en": _ahora(), "cerrado_por": usuario}) \
+            .eq("id", ap["id"]).execute()
+        raise
+    total = round(sum(x[2] for x in limpios), 2)
+    codigos.registrar(sb, usuario, "Creó apartado", "caudal", nombre,
+                      f"{cuenta} · {medio} · {len(limpios)} renglón(es) · ${total:,.2f}")
+    _limpiar()
+    return ap, len(limpios), total
+
+
 def agregar_a_apartado(sb, apartado, ids, usuario):
     filas = _libres_para_apartar(sb, ids)
     for f in filas:
@@ -622,7 +701,11 @@ def sacar_de_apartado(sb, pend, usuario):
 
 
 def deshacer_apartado(sb, apartado, usuario):
-    """Libera la plata: lo que faltaba pagar vuelve a pendientes sueltos (lo ya pagado queda pagado)."""
+    """Desarma el apartado: la plata que faltaba pagar vuelve a estar LIBRE en la cuenta de donde se apartó.
+    Lo que se escribió dentro del apartado («Crear apartado») se borra; los pendientes que ya existían (fichas,
+    consignaciones, creados a mano) vuelven a pendientes sueltos. Lo ya pagado queda pagado."""
+    sb.table(TABLA).update({"estado": ANULADO, "actualizado": _ahora()}).eq("apartado_id", apartado["id"]) \
+        .eq("estado", PENDIENTE).like("referencia", f"manual:ap{apartado['id']}:%").execute()
     sb.table(TABLA).update({"apartado_id": None, "actualizado": _ahora()}).eq("apartado_id", apartado["id"]) \
         .eq("estado", PENDIENTE).execute()
     sb.table(APARTADOS).update({"estado": AP_DESHECHO, "cerrado_en": _ahora(), "cerrado_por": usuario}) \
@@ -760,10 +843,78 @@ def _ok(msg):
     st.rerun()
 
 
-def _render_nuevo(sb, q_v, q_c):
-    """➕ Nuevo pendiente por pagar (a mano)."""
+def _render_nuevo(sb, q_v, q_c, saldos=None, apartados_por_cuenta=None, hay_apartados=True):
+    """Dos botones: ➕ Crear pendiente por pagar · 📦 Crear apartado (con sus renglones, en un solo paso)."""
     ss = st.session_state
-    with st.expander("➕ Nuevo pendiente por pagar", expanded=bool(ss.get("pend_nv_abierto"))):
+    b1, b2 = st.columns(2)
+    if b1.button("➕ Crear pendiente por pagar", use_container_width=True, key="pend_btn_nuevo",
+                 type="primary" if ss.get("pend_form") == "pendiente" else "secondary"):
+        ss["pend_form"] = None if ss.get("pend_form") == "pendiente" else "pendiente"
+        st.rerun()
+    if b2.button("📦 Crear apartado", use_container_width=True, key="pend_btn_apartado",
+                 type="primary" if ss.get("pend_form") == "apartado" else "secondary"):
+        ss["pend_form"] = None if ss.get("pend_form") == "apartado" else "apartado"
+        st.rerun()
+    if ss.get("pend_form") == "apartado":
+        _render_nuevo_apartado(sb, q_v, q_c, saldos, apartados_por_cuenta or {}, hay_apartados)
+    elif ss.get("pend_form") == "pendiente":
+        _render_nuevo_pendiente(sb, q_v, q_c)
+
+
+def _render_nuevo_apartado(sb, q_v, q_c, saldos, apartados_por_cuenta, hay_apartados):
+    """📦 Crear apartado: nombre, cuenta y los renglones a pagar, todo de una vez."""
+    import caudal
+    ss = st.session_state
+    if not hay_apartados:
+        st.error("Falta crear en Supabase la tabla de apartados. Corre este SQL una vez:")
+        st.code(APARTADOS_SQL, language="sql")
+        return
+    with st.container(border=True):
+        st.markdown("**📦 Crear apartado**")
+        st.caption("Separa plata de una cuenta para pagar estas cosas después. Escribe cada una en un renglón "
+                   "(se agregan renglones abajo de la tabla). Para apartar pendientes que ya existen (fichas, "
+                   "consignaciones), márcalos en la lista de abajo y elige «Apartar la plata».")
+        a1, a2 = st.columns(2)
+        nombre = a1.text_input("Nombre del apartado", key="pend_dap_nombre", placeholder="Sobres de diciembre")
+        desde = a2.selectbox("¿De qué cuenta se separa la plata? *", caudal._opciones_cuenta(), index=None,
+                             key="pend_dap_cuenta", placeholder="Elegir cuenta…")
+        tabla = st.data_editor(
+            [{"¿A quién?": "", "Concepto": "", "Monto ($)": None, "Modelo": ""}],
+            num_rows="dynamic", use_container_width=True, key=f"pend_dap_tabla_{ss.get('pend_dap_v', 0)}",
+            column_config={"Monto ($)": st.column_config.NumberColumn(min_value=0.0, step=100.0, format="$%.2f")})
+        renglones = [{"proveedor": r.get("¿A quién?"), "concepto": r.get("Concepto"), "monto": r.get("Monto ($)"),
+                      "modelo": r.get("Modelo")} for r in (tabla or [])]
+        total = round(sum(_num(r["monto"]) for r in renglones), 2)
+        if desde and total:
+            cuenta, medio = caudal._partir(desde)
+            if saldos is not None and cuenta in saldos:
+                libre = saldos[cuenta].get(medio, 0.0) - apartados_por_cuenta.get((cuenta, medio), 0.0)
+                (st.warning if total > libre + 0.004 else st.caption)(
+                    f"Libre en {cuenta} · {medio}: {dinero(libre)} → después de apartar: {dinero(libre - total)}"
+                    + (" (no alcanza: puedes apartar igual)" if total > libre + 0.004 else ""))
+        if st.button(f"Crear apartado · {dinero(total)}", type="primary", key="pend_dap_ok",
+                     disabled=desde is None or not total,
+                     help=None if desde and total else "Elige la cuenta y escribe al menos un renglón con monto."):
+            quien = codigos.confirmar(sb, q_v, q_c)
+            if quien:
+                try:
+                    ap, n, tot = crear_apartado_directo(sb, nombre, *caudal._partir(desde), renglones, quien)
+                except ValueError as ex:
+                    st.error(str(ex))
+                except Exception as ex:
+                    st.error(f"No se pudo crear el apartado: {ex}")
+                else:
+                    for k in ("pend_dap_nombre", "pend_dap_cuenta", "pend_form"):
+                        ss.pop(k, None)
+                    ss["pend_dap_v"] = ss.get("pend_dap_v", 0) + 1          # tabla nueva, vacía
+                    _ok(f"Apartado «{ap['nombre']}»: {n} renglón(es) por {dinero(tot)} separados de {desde}.")
+
+
+def _render_nuevo_pendiente(sb, q_v, q_c):
+    """➕ Crear pendiente por pagar (a mano)."""
+    ss = st.session_state
+    with st.container(border=True):
+        st.markdown("**➕ Crear pendiente por pagar**")
         st.caption("Para cualquier deuda que no sale sola de una ficha (p. ej. un servicio, un préstamo, una pieza "
                    "sin ficha). Después se paga o se aparta como los demás.")
         n1, n2 = st.columns(2)
@@ -776,7 +927,6 @@ def _render_nuevo(sb, q_v, q_c):
         concepto = n3.text_input("Concepto *", key="pend_nv_concepto", placeholder="Qué se le debe")
         modelo = n4.text_input("Modelo (opcional)", key="pend_nv_modelo")
         if st.button("Crear pendiente", type="primary", key="pend_nv_ok"):
-            ss["pend_nv_abierto"] = True
             quien = codigos.confirmar(sb, q_v, q_c)
             if quien:
                 try:
@@ -786,7 +936,7 @@ def _render_nuevo(sb, q_v, q_c):
                 except Exception as ex:
                     st.error(f"No se pudo crear: {ex}")
                 else:
-                    for k in ("pend_nv_prov", "pend_nv_monto", "pend_nv_concepto", "pend_nv_modelo", "pend_nv_abierto"):
+                    for k in ("pend_nv_prov", "pend_nv_monto", "pend_nv_concepto", "pend_nv_modelo", "pend_form"):
                         ss.pop(k, None)
                     _ok(f"Pendiente creado: {prov.strip()} · {concepto.strip()} · {dinero(_num(monto))}.")
 
@@ -844,12 +994,14 @@ def _render_apartados(sb, aps, piezas, q_v, q_c):
                                                          else " El apartado quedó pagado."))
             b3.write("")
             with b3.popover("Deshacer apartado", use_container_width=True):
-                st.caption("Libera la plata. Lo que falta pagar vuelve a pendientes sueltos; lo ya pagado queda pagado.")
+                st.caption("La plata que falta pagar vuelve a quedar libre en la cuenta. Lo escrito dentro del "
+                           "apartado se borra; los pendientes que ya existían vuelven a sueltos. Lo pagado, pagado.")
                 if st.button("Sí, deshacer", key=f"ap_deshacer_{a['id']}"):
                     quien = codigos.confirmar(sb, q_v, q_c)
                     if quien:
                         deshacer_apartado(sb, a, quien)
-                        _ok(f"Apartado «{a['nombre']}» deshecho: la plata quedó libre en {a['cuenta']}.")
+                        _ok(f"Apartado «{a['nombre']}» desarmado: {dinero(total)} volvieron a quedar libres en "
+                            f"{a['cuenta']} · {a['medio']}.")
     st.divider()
 
 
@@ -892,7 +1044,11 @@ def render_lista(sb, user, q_v, q_c, saldos=None):
     m2.metric("APARTADO", dinero(total_ap), help="Por pagar con la plata ya separada en un apartado.")
     m3.metric("EN CONSIGNACIÓN (aún sin vender)", dinero(total_consig),
               help="Lo que se le debería a los consignadores si se vendieran las piezas que siguen aquí.")
-    _render_nuevo(sb, q_v, q_c)
+    _ap_cuenta = {}
+    for a in aps:
+        k = (a["cuenta"], a["medio"])
+        _ap_cuenta[k] = _ap_cuenta.get(k, 0.0) + sum(_num(f.get("monto")) for f in piezas.get(a["id"], []))
+    _render_nuevo(sb, q_v, q_c, saldos, _ap_cuenta, hay_apartados)
     if aps:
         _render_apartados(sb, aps, piezas, q_v, q_c)
     if not grupos:

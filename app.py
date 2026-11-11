@@ -506,20 +506,23 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        _cant_prev = str(datos_previos.get("CANTIDAD", "1") if str(datos_previos.get("CANTIDAD", "")).strip() else "1")
        if _disp_prev == "v" and not _ped_unid and to_float(_cant_prev, 1.0) <= 1:
            _cant_prev = "0"                      # fichas viejas vendidas que quedaron con 1
-       # UNIDADES COMPRADAS: cuántas piezas trae el lote (fijo, no baja con las ventas). Los costos de la ficha son
-       # POR PIEZA y Caudal registra costo × unidades compradas. Al cambiarlo, CANTIDAD se mueve lo mismo:
-       # en una ficha nueva, 5 compradas = 5 disponibles. En una ficha vieja que todavía no lo tenía, solo se anota
-       # (su CANTIDAD ya está bien y puede que ya se hayan vendido algunas).
+       # UNIDADES COMPRADAS (reabasto): el campo está junto al costo de la Compra #1 y queda VACÍO después de guardar.
+       # Al guardar con un número: se suma a CANTIDAD y a las piezas compradas en total (UNIDADES_COMPRADAS), y
+       # Caudal registra esas piezas × el costo por pieza. Ejemplo: quedaban 2, compraste 5 → CANTIDAD 7.
+       # Ficha nueva: CANTIDAD = las unidades compradas.
        _tenia_unid = bool(str(datos_previos.get("UNIDADES_COMPRADAS") or "").strip())
-       _unid_prev = max(int(to_float(datos_previos.get("UNIDADES_COMPRADAS"), 1.0)), 1) if _tenia_unid else 1
-       # El campo está más abajo, junto al costo de la Compra #1; aquí se lee lo que tiene escrito
-       # (Streamlit ya trae en session_state el valor que se escribió antes de esta vuelta)
-       unidades_compradas = max(int(to_float(st.session_state.get(f"{prefix}_unidades", _unid_prev), 1.0)), 1)
-       if _tenia_unid or not is_edit:
-           # CANTIDAD se mueve lo mismo que las unidades compradas (ficha nueva: 5 compradas = 5 disponibles)
-           _cant_prev = str(max(int(to_float(_cant_prev, 1.0)) + unidades_compradas - _unid_prev, 0))
-       # La clave lleva las unidades: al cambiarlas, CANTIDAD se vuelve a crear con el valor nuevo ya calculado
-       v_cantidad = c_cant.text_input("CANTIDAD", value=_cant_prev, key=f"{prefix}_cantidad_{unidades_compradas}",
+       _unid_total_prev = max(int(to_float(datos_previos.get("UNIDADES_COMPRADAS"), 1.0)), 1) if _tenia_unid else 1
+       # La clave lleva el total: al guardar el total cambia y el campo aparece vacío otra vez
+       _k_agregar = f"{prefix}_unid_agregar_{_unid_total_prev}"
+       _k_original = f"{prefix}_unid_original"
+       # Ficha vieja de un lote (anterior a este campo): Caudal contó su compra como 1 pieza. Se puede corregir una vez.
+       _legacy_lote = is_edit and not _tenia_unid and (to_float(_cant_prev, 1.0) > 1 or bool(_ped_unid))
+       # Los campos se dibujan más abajo; aquí se lee lo que tienen escrito (Streamlit ya lo trae en session_state)
+       unid_agregar = max(int(to_float(st.session_state.get(_k_agregar), 0.0)), 0)
+       unid_original = max(int(to_float(st.session_state.get(_k_original), 0.0)), 0) if _legacy_lote else 0
+       _base_total = unid_original or (_unid_total_prev if is_edit else 0)
+       unidades_compradas = max(_base_total + unid_agregar, 1)
+       v_cantidad = c_cant.text_input("CANTIDAD", value=_cant_prev, key=f"{prefix}_cantidad",
                                       help="Unidades disponibles. VENDIDO = 0. Si hay más de una, cada pedido descuenta las "
                                            "que vende y al llegar a 0 la ficha queda VENDIDA sola. Si cancelan el pedido, vuelven.")
        cantidad = max(int(to_float(v_cantidad, 1.0)), 0)
@@ -532,6 +535,10 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                cantidad = 1                      # la pasaron de vendida a disponible: al menos 1
            else:
                disponibilidad = "v"              # pusieron 0 unidades: vendida
+       if unid_agregar:                          # reabasto: se suman a lo que queda (si estaba vendida, quedaban 0)
+           cantidad = (cantidad if (is_edit and disponibilidad != "v") else 0) + unid_agregar
+           disponibilidad = "" if disponibilidad == "v" else disponibilidad
+           c_cant.caption(f"Al guardar: **{cantidad}** (+{unid_agregar} compradas)")
 
 
        ubicacion_opts = ["1 - Showroom", "2 - Santa Fe", "3 - Antara", "4 - Lilly", "5 - Bodega"]
@@ -647,8 +654,29 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            st.caption(f"✅ Pagado desde Pendientes por pagar: ${to_float(d_b['pagado_monto']):,.2f} "
                       f"({d_b.get('pagado_info') or ''}). Cambiar el costo aquí ya no modifica Caudal.")
            return {k: d_b.get(k) for k in ("pagado_monto", "pagado_info", "pagado_cuenta", "pagado_medio")} | {"pend": False}
+       # ANTICIPO: se pagó una parte. El anticipo va a Caudal (de quien pagó) y el saldo a Pendientes por pagar;
+       # al pagar el saldo desde Pendientes entra a Caudal como otro movimiento. La ficha solo muestra el costo.
+       saldo_hecho = {k: d_b.get(k) for k in ("saldo_pagado", "saldo_info", "saldo_cuenta", "saldo_medio")
+                      if d_b.get(k) is not None}
+       ant_prev = to_float(d_b.get("ant"))
+       if ant_prev > 0 and not st.session_state.get(f"{clave_w}_ant_corr"):
+           if saldo_hecho:
+               st.caption(f"✅ Con anticipo; el saldo ya se pagó desde Pendientes ({d_b.get('saldo_info') or ''}).")
+           else:
+               st.caption("🕓 Con anticipo: el saldo está en Caudal → Pendientes por pagar.")
+           if not saldo_hecho:
+               st.checkbox("Corregir el anticipo", key=f"{clave_w}_ant_corr")
+           return {"pend": False, "ant": ant_prev, **saldo_hecho}
        defecto = bool(d_b["pend"]) if "pend" in d_b else to_float(d_b.get("costo")) == 0
-       pend = st.checkbox("Pendiente por pagar (se descuenta en Caudal recién al pagarlo)", value=defecto, key=clave_w)
+       e1, e2 = st.columns([3, 1])
+       pend = e1.checkbox("Pendiente por pagar (se descuenta en Caudal recién al pagarlo)", value=defecto, key=clave_w)
+       ant_txt = e2.text_input("ANTICIPO ($)", value=(f"{ant_prev:g}" if ant_prev else ""), placeholder="0",
+                               key=f"{clave_w}_ant",
+                               help="Si se pagó solo una parte: el anticipo se descuenta en Caudal de quien pagó y "
+                                    "el saldo queda en Pendientes por pagar. En la ficha solo queda el costo.")
+       ant = round(to_float(ant_txt), 2)
+       if ant > 0:
+           return {"pend": False, "ant": ant}
        return {"pend": bool(pend)}
 
    # ---------- Datos de Compra (puede haber varias; cada una con su costo) ----------
@@ -674,17 +702,33 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        c_prov = k1.text_input(f"PROVEEDOR DE COMPRA #{n}", value=str(d_c.get("prov", "") or ""), key=f"{prefix}_provcompra_{i_c}")
        c_fp = k2.selectbox(f"FORMA DE PAGO A COMPRA #{n}", pago_opts, index=_idx(pago_opts, d_c.get("fp")), key=f"{prefix}_fp_compra_{i_c}")
        c_qp = k3.selectbox(f"QUIÉN PAGÓ (COMPRA) #{n}", pago_quien_opts, index=_idx(pago_quien_opts, d_c.get("qp")), key=f"{prefix}_qp_compra_{i_c}")
-       if i_c == 0:       # UNIDADES COMPRADAS (del lote) junto al costo de la primera compra
+       if i_c == 0:       # UNIDADES COMPRADAS (reabasto) junto al costo de la primera compra
            k4, k5, k_u, k6 = st.columns([1, 1, 0.8, 1])
-           k_u.text_input("UNIDADES COMPRADAS", value=str(_unid_prev), key=f"{prefix}_unidades",
-                          help="Cuántas piezas compraste en este lote. Los costos van POR PIEZA; Caudal descuenta "
-                               "costo × unidades compradas. Pone sola la CANTIDAD.")
+           k_u.text_input("UNIDADES COMPRADAS", value="", placeholder="0", key=_k_agregar,
+                          help="Las piezas que compraste ahora. Al guardar se suman a CANTIDAD, Caudal registra "
+                               "unidades × costo por pieza y el campo queda vacío para el próximo reabasto.")
        else:
            k4, k5, k6 = st.columns(3)
        c_fadq = k4.text_input(f"FECHA ADQUISICIÓN #{n}", value=str(d_c.get("fadq", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fadq_compra_{i_c}")
        costo_prev = d_c.get("costo", "")
        c_costo = k5.text_input(f"COSTO ADQUISICIÓN #{n} ($)", value="" if costo_prev in (None, "", 0, 0.0) else str(costo_prev), key=f"{prefix}_c_adq_{i_c}")
        c_fpago = k6.text_input(f"FECHA DE PAGO COMPRA #{n}", value=str(d_c.get("fpago", "") or ""), placeholder="10/oct/26", key=f"{prefix}_fpagocompra_{i_c}")
+       if i_c == 0:
+           if _legacy_lote:
+               st.text_input("PIEZAS DE LA COMPRA ORIGINAL (solo corrige Caudal)", value="", placeholder="1",
+                             key=_k_original,
+                             help="Ficha anterior a «unidades compradas»: Caudal registró la compra como 1 pieza. "
+                                  "Escribe cuántas piezas trajo esa compra (p. ej. 5) y Caudal registra la diferencia. "
+                                  "No cambia la CANTIDAD.")
+           _costo_u = to_float(c_costo, 0.0)
+           if unid_agregar or unid_original or unidades_compradas > 1:
+               st.caption(
+                   (f"Reabasto: **+{unid_agregar}** piezas × ${_costo_u:,.2f} = **${unid_agregar * _costo_u:,.2f}** a Caudal. "
+                    if unid_agregar else "")
+                   + f"Piezas compradas en total: {unidades_compradas}.")
+           if unid_agregar and d_c.get("pagado_monto") is not None:
+               st.warning("Esta compra se pagó desde Pendientes por pagar: el reabasto NO se registra solo en Caudal. "
+                          "Regístralo a mano en Caudal (Gasto) o agrégalo como otra compra.")
        c_notas = st.text_input(f"NOTAS FORMA PAGO COMPRA #{n}", value=str(d_c.get("notas", "") or ""), key=f"{prefix}_notaspagocompra_{i_c}")
        c_extra = _estado_pago(d_c, f"{prefix}_pend_compra_{i_c}")
        compras_capturadas.append({"prov": c_prov, "fp": c_fp, "qp": c_qp, "fadq": c_fadq, "costo": to_float(c_costo),
@@ -824,7 +868,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
                      "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS"
                      + (" + COSTO BASE DE CONSIGNACIÓN" if es_consig else ""))
    if unidades_compradas > 1 and total_costo:
-       st.caption(f"Costo por pieza. Lote de {unidades_compradas} piezas: en Caudal se registra "
+       st.caption(f"Costo por pieza. Piezas compradas en total: {unidades_compradas} → en Caudal: "
                   f"${total_costo * unidades_compradas:,.2f} (costo × {unidades_compradas}).")
    st.divider()
    col_show, col_cp = st.columns(2)
@@ -990,6 +1034,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
            "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp),
            "UNIDADES_COMPRADAS": unidades_compradas,
+           "REABASTOS": (list(datos_previos.get("REABASTOS") or [])
+                         + ([{"unidades": unid_agregar, "fecha": time.strftime("%d/%m/%Y"),
+                              "costo": num(total_costo)}] if unid_agregar else [])),
            **({"UNIDADES_PEDIDOS": _ped_unid} if _ped_unid else {})
        }
 

@@ -117,6 +117,7 @@ def consumir(sb, modelo):
         return f"Modelo {modelo}: no se encontró en el inventario."
     if estado_disp(d) == "r":
         d["DISP"] = d["DISPONIBILIDAD"] = "v"
+        d["CANTIDAD"] = 0                               # vendido = 0 unidades
         _guardar(sb, modelo, d)
         return _shopify(modelo, True)
     return None
