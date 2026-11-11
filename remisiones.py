@@ -620,6 +620,8 @@ def generar_pdf(rem, items, pagos=(), firma=None):
     for n, linea in enumerate(rem.get("_direccion") or []):      # domicilio de entrega del pedido (si tiene)
         filas_izq.append([campo("Dirección:" if n == 0 else "", linea, 52, 270)])
     filas_izq.append([campo("Fecha:", f.strftime("%d/%m/%Y") if f else "", 52, 120)])
+    if str(rem.get("vendedor") or "").strip():                # quién atendió (varios: «ANA / LUIS»)
+        filas_izq.append([campo("Vendedor:", " ".join(str(rem["vendedor"]).split()), 52, 270)])
     izq = Table(filas_izq, colWidths=[322])
     der = Table([[Paragraph("REMISIÓN", ST_TIT)], [Paragraph(escape(folio(rem)), ST_TIT)]], colWidths=[ANCHO - 340])
     for t in (izq, der):
