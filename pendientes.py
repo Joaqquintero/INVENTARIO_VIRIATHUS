@@ -700,6 +700,51 @@ def sacar_de_apartado(sb, pend, usuario):
     _limpiar()
 
 
+def sacar_monto_de_apartado(sb, apartado, monto, concepto, fecha, usuario):
+    """Saca `monto` del apartado como gasto (en rojo en Caudal, desde la cuenta del apartado) y el resto sigue
+    apartado. Va pagando los renglones en orden (primero los escritos a mano); si el último no se completa, se
+    parte: se paga lo que alcanza y el resto de ese renglón queda apartado. Los costos de fichas y consignaciones no
+    se parten (se pagan enteros). Devuelve (pagado, queda_apartado)."""
+    import uuid
+    monto = round(_num(monto), 2)
+    if monto <= 0:
+        raise ValueError("Escribe cuánto vas a sacar del apartado.")
+    concepto = " ".join(str(concepto or "").split())
+    filas = (sb.table(TABLA).select("*").eq("apartado_id", apartado["id"]).eq("estado", PENDIENTE)
+             .execute().data or [])
+    total = round(sum(_num(f.get("monto")) for f in filas), 2)
+    if monto > total + 0.004:
+        raise ValueError(f"En el apartado quedan {dinero(total)}: no se pueden sacar {dinero(monto)}.")
+    filas.sort(key=lambda f: (f.get("tipo") != "manual", f["id"]))
+    falta, a_pagar = monto, []
+    for f in filas:
+        if falta <= 0.004:
+            break
+        m = round(_num(f.get("monto")), 2)
+        if m <= falta + 0.004:
+            a_pagar.append(f["id"])                         # se paga entero
+            falta = round(falta - m, 2)
+            continue
+        if f.get("tipo") != "manual":
+            raise ValueError(f"Para sacar {dinero(monto)} habría que partir «{f.get('detalle') or f.get('concepto')}», "
+                             f"que es un costo de ficha o consignación y se paga entero ({dinero(m)}). "
+                             "Saca un monto que lo cubra completo, o págalo con «Pagar».")
+        # Se parte: el renglón queda con el resto (sigue apartado) y nace uno pagado por lo que se saca
+        sb.table(TABLA).update({"monto": round(m - falta, 2), "actualizado": _ahora()}).eq("id", f["id"]).execute()
+        nueva = sb.table(TABLA).insert({
+            "tipo": "manual", "modelo": f.get("modelo"), "proveedor": f.get("proveedor"),
+            "referencia": f"{f['referencia']}:parte{uuid.uuid4().hex[:6]}", "concepto": concepto or f.get("concepto"),
+            "detalle": concepto or f.get("detalle"), "monto": falta, "estado": PENDIENTE, "usuario": usuario,
+            "apartado_id": apartado["id"], "actualizado": _ahora()}).execute().data[0]
+        a_pagar.append(nueva["id"])
+        falta = 0.0
+    if concepto:                                            # que el gasto en Caudal diga para qué se sacó
+        for i in a_pagar:
+            sb.table(TABLA).update({"detalle": concepto}).eq("id", i).execute()
+    _, pagado = pagar(sb, a_pagar, None, None, fecha, usuario, apartado=apartado)
+    return pagado, round(total - pagado, 2)
+
+
 def deshacer_apartado(sb, apartado, usuario):
     """Desarma el apartado: la plata que faltaba pagar vuelve a estar LIBRE en la cuenta de donde se apartó.
     Lo que se escribió dentro del apartado («Crear apartado») se borra; los pendientes que ya existían (fichas,
@@ -992,6 +1037,32 @@ def _render_apartados(sb, aps, piezas, q_v, q_c):
                         _ok(f"Pagado desde el apartado «{a['nombre']}»: {n} pieza(s) por {dinero(tot)}. Ya aparece "
                             "en rojo en Movimientos." + (f" Quedan {resto} por pagar en el apartado." if resto
                                                          else " El apartado quedó pagado."))
+            # Sacar una parte: gasto por lo que se necesita y el resto sigue apartado
+            if ps:
+                s1, s2, s3 = st.columns([1.2, 2.4, 1.6])
+                m_sacar = s1.number_input("Sacar ($)", min_value=0.0, max_value=float(total), step=100.0,
+                                          format="%.2f", key=f"ap_sacar_monto_{a['id']}")
+                c_sacar = s2.text_input("¿Para qué?", key=f"ap_sacar_conc_{a['id']}",
+                                        placeholder="Concepto del gasto (sale así en Caudal)")
+                s3.write("")
+                if s3.button(f"Sacar {dinero(m_sacar)}" if m_sacar else "Sacar", key=f"ap_sacar_btn_{a['id']}",
+                             disabled=not m_sacar, use_container_width=True,
+                             help=f"Registra el gasto en rojo desde {a['cuenta']} · {a['medio']} y lo demás "
+                                  "sigue apartado. Usa la fecha de pago de abajo."):
+                    quien = codigos.confirmar(sb, q_v, q_c)
+                    if quien:
+                        try:
+                            pagado, queda = sacar_monto_de_apartado(
+                                sb, a, m_sacar, c_sacar, ss.get(f"ap_fecha_{a['id']}") or _hoy(), quien)
+                        except ValueError as ex:
+                            st.error(str(ex))
+                        except Exception as ex:
+                            st.error(f"No se pudo sacar: {ex}")
+                        else:
+                            for k in (f"ap_sacar_monto_{a['id']}", f"ap_sacar_conc_{a['id']}"):
+                                ss.pop(k, None)
+                            _ok(f"Se sacaron {dinero(pagado)} del apartado «{a['nombre']}» (ya en rojo en Movimientos). "
+                                + (f"Siguen apartados {dinero(queda)}." if queda > 0.004 else "El apartado quedó pagado."))
             b3.write("")
             with b3.popover("Deshacer apartado", use_container_width=True):
                 st.caption("La plata que falta pagar vuelve a quedar libre en la cuenta. Lo escrito dentro del "
