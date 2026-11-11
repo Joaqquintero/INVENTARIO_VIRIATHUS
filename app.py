@@ -240,11 +240,17 @@ def login():
        _l2.image(os.path.join(_DIR_ASSETS, "logo_escudo.png"), use_container_width=True)
        if st.session_state.pop("_borrar_llave", False):
            _sesion.olvidar()                # se cerró sesión: este navegador ya no entra solo
-       username = st.text_input("Usuario", key="login_user")
-       password = st.text_input("Contraseña", type="password", key="login_pass")
-       mantener = st.checkbox("Mantener la sesión iniciada en este equipo", value=True, key="login_mantener",
-                              help="No se cierra al suspender la compu o el celular ni con el tiempo; solo con «Cerrar Sesión».")
-       btn_login = st.button("Iniciar Sesión", use_container_width=True, key="login_btn")
+       # Dentro de un formulario: con Enter en la contraseña se inicia sesión, sin tocar el botón
+       try:
+           formulario = st.form("login_form", border=False)
+       except TypeError:                     # Streamlit viejo: sin la opción border
+           formulario = st.form("login_form")
+       with formulario:
+           username = st.text_input("Usuario", key="login_user")
+           password = st.text_input("Contraseña", type="password", key="login_pass")
+           mantener = st.checkbox("Mantener la sesión iniciada en este equipo", value=True, key="login_mantener",
+                                  help="No se cierra al suspender la compu o el celular ni con el tiempo; solo con «Cerrar Sesión».")
+           btn_login = st.form_submit_button("Iniciar Sesión", use_container_width=True)
       
        if btn_login:
            if not USUARIOS:
@@ -490,7 +496,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        disp_opts = ["Disponible (vacío)", "v - VENDIDO", "r - RESERVADO (cotización)"]
        _disp_prev = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", "")) or "").strip().lower()
        disp_idx = {"v": 1, "r": 2}.get(_disp_prev, 0)
-       c_disp, c_cant = st.columns([3, 1])
+       c_disp, c_unid, c_cant = st.columns([2.4, 1.3, 1])
        disp_sel = c_disp.selectbox("DISPONIBILIDAD", disp_opts, index=disp_idx, key=f"{prefix}_disp",
                                    help="RESERVADO lo pone solo una cotización vigente; se libera al vencer o cancelarse.")
        disponibilidad = "v" if "VENDIDO" in disp_sel else ("r" if "RESERVADO" in disp_sel else "")
@@ -500,7 +506,21 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        _cant_prev = str(datos_previos.get("CANTIDAD", "1") if str(datos_previos.get("CANTIDAD", "")).strip() else "1")
        if _disp_prev == "v" and not _ped_unid and to_float(_cant_prev, 1.0) <= 1:
            _cant_prev = "0"                      # fichas viejas vendidas que quedaron con 1
-       v_cantidad = c_cant.text_input("CANTIDAD", value=_cant_prev, key=f"{prefix}_cantidad",
+       # UNIDADES COMPRADAS: cuántas piezas trae el lote (fijo, no baja con las ventas). Los costos de la ficha son
+       # POR PIEZA y Caudal registra costo × unidades compradas. Al cambiarlo, CANTIDAD se mueve lo mismo:
+       # en una ficha nueva, 5 compradas = 5 disponibles. En una ficha vieja que todavía no lo tenía, solo se anota
+       # (su CANTIDAD ya está bien y puede que ya se hayan vendido algunas).
+       _tenia_unid = bool(str(datos_previos.get("UNIDADES_COMPRADAS") or "").strip())
+       _unid_prev = max(int(to_float(datos_previos.get("UNIDADES_COMPRADAS"), 1.0)), 1) if _tenia_unid else 1
+       v_unidades = c_unid.text_input("UNIDADES COMPRADAS", value=str(_unid_prev), key=f"{prefix}_unidades",
+                                      help="Cuántas piezas compraste en este lote. Los costos de abajo van POR PIEZA; "
+                                           "Caudal descuenta costo × unidades compradas. Pone sola la CANTIDAD.")
+       unidades_compradas = max(int(to_float(v_unidades, 1.0)), 1)
+       if _tenia_unid or not is_edit:
+           # CANTIDAD se mueve lo mismo que las unidades compradas (ficha nueva: 5 compradas = 5 disponibles)
+           _cant_prev = str(max(int(to_float(_cant_prev, 1.0)) + unidades_compradas - _unid_prev, 0))
+       # La clave lleva las unidades: al cambiarlas, CANTIDAD se vuelve a crear con el valor nuevo ya calculado
+       v_cantidad = c_cant.text_input("CANTIDAD", value=_cant_prev, key=f"{prefix}_cantidad_{unidades_compradas}",
                                       help="Unidades disponibles. VENDIDO = 0. Si hay más de una, cada pedido descuenta las "
                                            "que vende y al llegar a 0 la ficha queda VENDIDA sola. Si cancelan el pedido, vuelven.")
        cantidad = max(int(to_float(v_cantidad, 1.0)), 0)
@@ -798,6 +818,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    mostrar_calculado("TOTAL COSTO ($)", total_costo, f"{prefix}_tot_costo",
                      "COSTO ADQUISICION + COSTO FINANCIERO + COSTO RESTAURO + COSTO FLETES + OTROS COSTOS"
                      + (" + COSTO BASE DE CONSIGNACIÓN" if es_consig else ""))
+   if unidades_compradas > 1 and total_costo:
+       st.caption(f"Costo por pieza. Lote de {unidades_compradas} piezas: en Caudal se registra "
+                  f"${total_costo * unidades_compradas:,.2f} (costo × {unidades_compradas}).")
    st.divider()
    col_show, col_cp = st.columns(2)
    # ---------- SHOWROOM ----------
@@ -961,6 +984,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            "PRECIO_CP_CON_IVA_CALCULADO": num(pvcp_iva), "CP_PRECIO_REDONDEADO": num(pvcp_red),
            "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
            "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp),
+           "UNIDADES_COMPRADAS": unidades_compradas,
            **({"UNIDADES_PEDIDOS": _ped_unid} if _ped_unid else {})
        }
 

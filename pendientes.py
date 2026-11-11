@@ -237,15 +237,17 @@ def ref_ficha(modelo, tipo, n):
 def sincronizar_costos_ficha(sb, modelo, datos, usuario):
     """Después de guardar la ficha: los costos marcados «Pendiente por pagar» quedan en la lista (o se actualizan);
     los que se desmarcaron o se quitaron salen de la lista. Devuelve una lista de avisos."""
+    from caudal import unidades_compradas
     modelo = str(modelo).strip()
     nombre = " ".join(str(datos.get("NOMBRE") or "").split())
+    u = unidades_compradas(datos)              # el costo de la ficha es por pieza: se debe costo × unidades del lote
     actuales = {f["referencia"]: f for f in (sb.table(TABLA).select("*").like("referencia", f"ficha:{modelo}:%")
                                              .execute().data or [])}
     vistos, avisos = set(), []
     for tipo, (lista_k, _) in LISTA_DE_TIPO.items():
         for n, b in enumerate(datos.get(lista_k) or []):
             ref = ref_ficha(modelo, tipo, n)
-            costo = round(_num(b.get("costo")), 2)
+            costo = round(_num(b.get("costo")) * u, 2)
             prev = actuales.get(ref)
             if b.get("pagado_monto") is not None:
                 vistos.add(ref)
@@ -258,7 +260,8 @@ def sincronizar_costos_ficha(sb, modelo, datos, usuario):
                 continue
             vistos.add(ref)
             fila = {"tipo": tipo, "modelo": modelo, "referencia": ref, "proveedor": " ".join(str(b.get("prov") or "").split()),
-                    "concepto": f"{NOMBRE_TIPO[tipo]} · Mod {modelo}", "detalle": nombre, "monto": costo,
+                    "concepto": f"{NOMBRE_TIPO[tipo]} · Mod {modelo}",
+                    "detalle": nombre + (f" · {u} piezas × {dinero(_num(b.get('costo')))}" if u > 1 else ""), "monto": costo,
                     "actualizado": _ahora()}
             if prev is None:
                 sb.table(TABLA).insert({**fila, "estado": PENDIENTE, "usuario": usuario}).execute()

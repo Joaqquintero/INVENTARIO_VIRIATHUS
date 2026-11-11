@@ -246,9 +246,21 @@ NOMBRE_TIPO = {"compra": "Compra", "restauro": "Restauro", "financiero": "Costo 
                "otro": "Otro costo"}
 
 
-def _bloque(clave, tipo, b, costo, texto):
+def unidades_compradas(datos):
+    """Cuántas piezas se compraron en el lote (UNIDADES COMPRADAS de la ficha; 1 si no dice).
+    Los costos de la ficha son POR PIEZA; lo que salió de la cuenta es costo × unidades compradas.
+    No es CANTIDAD: CANTIDAD baja con cada venta, las unidades compradas no cambian."""
+    try:
+        u = int(float(str((datos or {}).get("UNIDADES_COMPRADAS") or 1).replace(",", "")))
+    except (TypeError, ValueError):
+        u = 1
+    return max(u, 1)
+
+
+def _bloque(clave, tipo, b, costo, texto, unidades=1):
     """Un costo de la ficha para Caudal, o None si está «Pendiente por pagar» (se descuenta al pagarlo, desde
-    Caudal → Pendientes). Si se pagó desde Pendientes cuentan el monto y la cuenta del pago, no lo que diga hoy la ficha."""
+    Caudal → Pendientes). Si se pagó desde Pendientes cuentan el monto y la cuenta del pago, no lo que diga hoy la ficha.
+    El costo de la ficha es por pieza: a Caudal va × `unidades` (las unidades compradas del lote)."""
     if b.get("pend"):
         return None
     if b.get("pagado_monto") is not None:
@@ -257,27 +269,30 @@ def _bloque(clave, tipo, b, costo, texto):
         else:
             cm = cuenta_medio_de_ficha(b.get("qp"), b.get("fp"))
         return (clave, tipo, *cm, round(_num(b.get("pagado_monto")), 2), texto)
-    return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), round(_num(costo), 2), texto)
+    if unidades > 1:
+        texto += f" · {unidades} piezas × {dinero(_num(costo))}"
+    return (clave, tipo, *cuenta_medio_de_ficha(b.get("qp"), b.get("fp")), round(_num(costo) * unidades, 2), texto)
 
 
 def _bloques(datos):
     """[(clave, tipo, cuenta, medio, costo, texto)] de los costos de una ficha (sin los pendientes por pagar)."""
     datos = datos or {}
     out = []
+    u = unidades_compradas(datos)
     compras = datos.get("COMPRAS") or []
     if not compras and (datos.get("COSTO_ADQUISICION") or datos.get("PROVEEDOR_COMPRA")):
         compras = [{"prov": datos.get("PROVEEDOR_COMPRA"), "fp": datos.get("FORMA_PAGO_COMPRA"),
                     "qp": datos.get("QUIEN_PAGO_COMPRA"), "costo": datos.get("COSTO_ADQUISICION")}]
     for n, c in enumerate(compras):
         out.append(_bloque(f"compra:{n}", "compra", c, c.get("costo"),
-                           f"Compra #{n + 1}" + (f" · {c.get('prov')}" if c.get("prov") else "")))
+                           f"Compra #{n + 1}" + (f" · {c.get('prov')}" if c.get("prov") else ""), u))
     rest = datos.get("RESTAURADORES") or []
     for n, r in enumerate(rest):
         costo = r.get("costo")
         if costo in (None, "") and n == 0 and not any("costo" in x for x in rest):
             costo = datos.get("COSTO_RESTAURO")
         out.append(_bloque(f"restauro:{n}", "restauro", r, costo,
-                           f"Restaurador #{n + 1}" + (f" · {r.get('prov')}" if r.get("prov") else "")))
+                           f"Restaurador #{n + 1}" + (f" · {r.get('prov')}" if r.get("prov") else ""), u))
     # Costo financiero, fletes y otros costos: igual que restauro. Fichas anteriores (solo el monto suelto, sin
     # quién pagó) cuentan como un bloque, para que al pasar a bloques no se registre como un costo nuevo.
     for tipo, lista_k, total_k, nombre in GASTOS_FICHA:
@@ -286,7 +301,7 @@ def _bloques(datos):
             lista = [{"costo": datos.get(total_k)}]
         for n, b in enumerate(lista):
             out.append(_bloque(f"{tipo}:{n}", tipo, b, b.get("costo"),
-                               f"{nombre} #{n + 1}" + (f" · {b.get('prov')}" if b.get("prov") else "")))
+                               f"{nombre} #{n + 1}" + (f" · {b.get('prov')}" if b.get("prov") else ""), u))
     return [b for b in out if b is not None]
 
 
