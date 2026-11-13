@@ -1443,6 +1443,7 @@ if tab1 is not None:
           if "busqueda_anterior" not in st.session_state or st.session_state["busqueda_anterior"] != busqueda:
               st.session_state["busqueda_anterior"] = busqueda
               st.session_state["pagina_actual"] = 0
+              st.session_state.pop("ver_parciales", None)   # búsqueda nueva: otra vez solo el modelo exacto
 
 
           tamano_pagina = 30
@@ -1451,6 +1452,7 @@ if tab1 is not None:
           hasta = desde + tamano_pagina - 1
 
 
+          hay_exacto = False      # ¿lo buscado es justo un MODELO que existe?
           with st.spinner("Consultando inventario..."):
               # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
               if mostrar_ultimos or solo_sin_precio:
@@ -1460,9 +1462,18 @@ if tab1 is not None:
                   query = supabase.table("productos").select("*", count="exact")
                   query = query.gte("MODELO", rango_desde).lt("MODELO", limite_sup).order("MODELO")
               elif busqueda.isdigit():
-                  # Solo números: el modelo (o un número que aparezca en la ficha), como siempre
+                  # Solo números: si existe ese MODELO exacto se muestra solo ese. Si no existe (o se pide ver
+                  # también los parecidos), como siempre: modelos que contienen el número o fichas que lo mencionan.
+                  try:
+                      hay_exacto = bool(supabase.table("productos").select("MODELO")
+                                        .eq("MODELO", busqueda).limit(1).execute().data)
+                  except Exception:
+                      hay_exacto = False
                   query = supabase.table("productos").select("*", count="exact")
-                  query = query.or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%")
+                  if hay_exacto and not st.session_state.get("ver_parciales"):
+                      query = query.eq("MODELO", busqueda)
+                  else:
+                      query = query.or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%")
               else:
                   # Texto: cada palabra tiene que aparecer en la ficha, sin importar acentos ni el orden
                   # («lampara bronce» encuentra «Lámpara de bronce» y «bronce, lámpara»)
@@ -1524,6 +1535,9 @@ if tab1 is not None:
                   else:
                       st.subheader(f"Resultados para \"{busqueda}\" ({total_coincidencias} encontrados):")
                       st.caption(f"Mostrando productos *{desde + 1}* a *{min(hasta + 1, total_coincidencias)}* (Página {pagina + 1} de {total_paginas})")
+                      if hay_exacto:
+                          st.checkbox(f"Ver también los que contienen «{busqueda}» (otros modelos o fichas que lo mencionan)",
+                                      key="ver_parciales")
           
               with col_pag:
                   c_prev, c_next = st.columns(2)
