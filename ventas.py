@@ -1511,8 +1511,9 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
 # ----------------------------------------------------------------------
 @guardar_en_memoria(ttl=30)
 def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtro_vend=(), filtro_forma=(),
-                   filtro_banco=()):
+                   filtro_banco=(), desde=0):
     """Lista de pedidos (con memoria de 30 s; se borra sola al guardar cualquier cambio).
+    Página: `limite` pedidos a partir del lugar `desde` (0 = los más recientes).
     filtro_vend: pedidos donde participa cualquiera de esos vendedores.
     filtro_forma / filtro_banco: pedidos con algún pago de esa forma de pago / en ese banco o caja.
     Cada fila trae «pago»: cómo y a dónde se pagó («Efectivo · CAJA $1,000 + Transferencia · BBVA $500»)."""
@@ -1520,7 +1521,8 @@ def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtr
         q = (_sb.table("pedidos")
              .select("numero_pedido,fecha,cliente,total,anticipo,saldo,status,estado_pedido" + (",costo_total" if ve_costos else ""))
              .gte("numero_pedido", pedido_desde())                # los anteriores no se muestran (corte.py)
-             .order("numero_pedido", desc=True).limit(limite))
+             .order("numero_pedido", desc=True))
+        q = q.limit(limite + desde) if numeros is not None else q.range(desde, desde + limite - 1)
         if numeros is not None:
             q = q.in_("numero_pedido", numeros)
         if busq:
@@ -1554,10 +1556,10 @@ def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtr
         nums, filas = sorted(posibles, reverse=True), []
         for i in range(0, len(nums), 300):          # de a 300 para no armar una consulta enorme
             filas += consulta(nums[i:i + 300])
-            if len(filas) >= limite:
+            if len(filas) >= desde + limite:
                 break
         filas.sort(key=lambda r: r["numero_pedido"], reverse=True)
-        filas = filas[:limite]
+        filas = filas[desde:desde + limite]
 
     # Columna «cómo y a dónde se pagó»
     nums = [f["numero_pedido"] for f in filas]
@@ -1651,19 +1653,28 @@ def _vista_lista_pedidos(sb, user, ve_costos):
         sin_costo = f2.checkbox("Solo pedidos sin costo", key="vp_f_sincosto",
                                 help="Pedidos con costo total en $0 (sin costo capturado). No incluye cancelados.")
     hay_filtro = bool(busq or filtro_status or sin_costo or filtro_vend or filtro_forma or filtro_banco)
-    limite = 500 if hay_filtro else 50
 
-    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, limite, tuple(filtro_vend),
-                          tuple(filtro_forma), tuple(filtro_banco))
+    # De a 50 por página: solo se traen y se dibujan esos 50 (menos memoria). Al cambiar la búsqueda o un filtro,
+    # vuelve a la página 1. Se pide uno de más solo para saber si hay página siguiente.
+    ss = st.session_state
+    firma = (busq, tuple(filtro_status), sin_costo, tuple(filtro_vend), tuple(filtro_forma), tuple(filtro_banco))
+    if ss.get("vp_filtros") != firma:
+        ss["vp_filtros"], ss["vp_pag"] = firma, 0
+    pag = ss.get("vp_pag", 0)
+    rows = _lista_pedidos(sb, busq, tuple(filtro_status), sin_costo, ve_costos, POR_PAGINA + 1, tuple(filtro_vend),
+                          tuple(filtro_forma), tuple(filtro_banco), desde=pag * POR_PAGINA)
+    hay_siguiente = len(rows) > POR_PAGINA
+    rows = rows[:POR_PAGINA]
     if not rows:
         st.info("No hay pedidos para mostrar con ese filtro." if hay_filtro else "No hay pedidos para mostrar.")
+        if pag:
+            st.button("‹ Volver a la página 1", key="vp_pag1", on_click=_ir_pagina, args=(0,))
         return
 
-    if hay_filtro:
-        extra = f" (se muestran los {limite} más recientes; afina el filtro)" if len(rows) >= limite else ""
-        st.caption(f"{len(rows)} pedido(s) encontrado(s){extra}.")
-    else:
-        st.caption("Últimos 50 pedidos. Usa la búsqueda o los filtros para ver otros.")
+    ini = pag * POR_PAGINA + 1
+    rango = f"{ini} a {ini + len(rows) - 1}"
+    st.caption(f"Página {pag + 1} · pedidos {rango}, del más reciente al más antiguo"
+               + ("" if hay_filtro else " · usa la búsqueda o los filtros para encontrar uno en particular") + ".")
 
     import lista_acciones as la
     columnas = [("N° PEDIDO", 0.8, lambda r: f"**{r['numero_pedido']}**"),
@@ -1680,6 +1691,20 @@ def _vista_lista_pedidos(sb, user, ve_costos):
              armar_pdf=lambda r: (pdf_de_pedido(sb, r["numero_pedido"]), f"pedido_{r['numero_pedido']}.pdf"),
              al_ver=lambda r: abrir_pedido(r["numero_pedido"]),
              ayuda_pdf="Descargar el PDF del pedido", ayuda_ver="Ver y editar el pedido")
+    if pag or hay_siguiente:
+        n1, n2, n3 = st.columns([1, 1, 1])
+        n1.button("‹ Anteriores 50", key="vp_ant", disabled=not pag, use_container_width=True,
+                  on_click=_ir_pagina, args=(pag - 1,))
+        n2.markdown(f"<div style='text-align:center;padding-top:8px'>Página {pag + 1}</div>", unsafe_allow_html=True)
+        n3.button("Siguientes 50 ›", key="vp_sig", disabled=not hay_siguiente, use_container_width=True,
+                  on_click=_ir_pagina, args=(pag + 1,))
+
+
+POR_PAGINA = 50
+
+
+def _ir_pagina(n):
+    st.session_state["vp_pag"] = max(int(n), 0)
 
 
 def _detalle_pedido(sb, user, sel, ped, ve_costos, puede_cancelar):
