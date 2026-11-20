@@ -202,6 +202,13 @@ def ventas_de_modelos(modelos):
    except Exception:
        pass
    faltan = [m for m in modelos if m not in out]
+   if faltan:                                   # se lo llevó un cliente de cuenta corriente
+       try:
+           from remisiones import vendidos_en_cuenta
+           out.update(vendidos_en_cuenta(supabase, faltan))
+       except Exception:
+           pass
+   faltan = [m for m in modelos if m not in out]
    if faltan:
        try:
            ords = (supabase.table("shopify_ordenes").select("nombre,marcados").eq("cancelada", False)

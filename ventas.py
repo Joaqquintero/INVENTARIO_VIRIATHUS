@@ -2226,6 +2226,14 @@ def render_ventas(sb, user):
             secciones.insert(pos, ("Por cobrar", tab_por_cobrar))
     except Exception as ex:
         st.caption(f"Por cobrar no disponible: {ex}")
+    try:
+        from remisiones import tab_cuenta_corriente
+        if user["role"] in roles("cuenta_corriente"):
+            nombres = [n for n, _ in secciones]
+            pos = nombres.index("Remisiones") + 1 if "Remisiones" in nombres else nombres.index("Pedidos") + 1
+            secciones.insert(pos, ("Cuenta corriente", tab_cuenta_corriente))
+    except Exception as ex:
+        st.caption(f"Cuenta corriente no disponible: {ex}")
     # «Resumen mensual» se movió a la sección «Reportes» (reportes.py)
     if user["role"] in ROLES_COMISIONES:
         secciones.append(("Comisiones", tab_comisiones))

@@ -12,6 +12,8 @@ De dónde salen los movimientos:
         BANCOMER CLAU → Claudia · BANCOMER VIRIATO → Viriato · BANCOMER ERNESTO → Ernesto ·
         otro banco (TPV BBVA, Bancomer / depósito Ensalada de Ideas…) → Ensalada de Ideas
     Si un pedido se cancela, sus cobros dejan de contar solos. Se corrigen desde el pedido.
+  * CUENTAS CORRIENTES (remisiones.py): cada pago entra en el momento, con la misma regla de cuentas que las ventas.
+    Si se borra el pago (o la cuenta), deja de contar.
   * COMPRAS, RESTAUROS, COSTO FINANCIERO, FLETES y OTROS COSTOS (al guardar la ficha): restan a «Quién pagó», en
     efectivo o transferencia según la forma de pago. Solo cuenta lo que se carga o cambia desde el encendido (si una compra vieja pasa de $5,000 a $6,000,
     se resta $1,000). «Ponerse al día» carga de una vez los costos completos de todas las fichas.
@@ -497,6 +499,33 @@ def _ventas(sb, inicio):
     return out
 
 
+def _cuentas_corrientes(sb, inicio):
+    """Pagos de las cuentas corrientes (remision_pagos) desde `inicio`, de solo lectura."""
+    try:
+        pagos = _todas(lambda: sb.table("remision_pagos").select("*").gte("fecha", inicio.isoformat()).order("id"))
+        ids = sorted({p["remision_id"] for p in pagos})
+        rems = {}
+        for i in range(0, len(ids), 300):
+            for r in (sb.table("remisiones").select("id,cliente,tipo").in_("id", ids[i:i + 300]).execute().data or []):
+                rems[r["id"]] = r
+    except Exception as ex:
+        st.error("⚠️ No se pudieron leer los pagos de las cuentas corrientes: los saldos de abajo NO los incluyen. "
+                 f"({ex})")
+        return []
+    out = []
+    for p in pagos:
+        rem = rems.get(p["remision_id"])
+        if not rem or rem.get("tipo") != "abierta" or round(_num(p.get("monto")), 2) <= 0:
+            continue
+        cta, med = cuenta_de_venta(p.get("forma_pago"), p.get("banco_caja"))
+        out.append({"id": f"r{p['id']}", "fecha": str(p.get("fecha") or "")[:10], "cuenta": cta, "medio": med,
+                    "monto": round(_num(p.get("monto")), 2), "tipo": "venta", "origen": "remision",
+                    "concepto": f"Cuenta corriente · R-{p['remision_id']}",
+                    "detalle": " · ".join(x for x in (rem.get("cliente"), p.get("forma_pago"), p.get("banco_caja")) if x),
+                    "creado": p.get("creado"), "anulado": False})
+    return out
+
+
 def motivo_no_cuenta(pago, ped, inicio):
     """Por qué un cobro NO entra a Caudal ("" si sí entra)."""
     if not ped:
@@ -537,7 +566,7 @@ def movimientos(sb, inicio):
     guardados = _todas(lambda: sb.table("caudal_movimientos").select("*").gte("fecha", inicio.isoformat()).order("id"))
     for m in guardados:
         m["cuenta"], m["medio"] = normalizar(m.get("cuenta"), m.get("medio"))
-    todos = guardados + _ventas(sb, inicio)
+    todos = guardados + _ventas(sb, inicio) + _cuentas_corrientes(sb, inicio)
     todos.sort(key=lambda m: (str(m.get("fecha") or ""), str(m.get("creado") or "")), reverse=True)
     return todos
 
@@ -645,7 +674,8 @@ def _tabla(movs, limite=300):
     colores = {"venta": VERDE, "gasto": ROJO, "traspaso": AZUL, "correccion": AZUL, "anulado": GRIS}
     fondos = {"venta": "rgba(95,207,138,.08)", "gasto": "rgba(240,138,120,.08)", "traspaso": "transparent",
               "correccion": "rgba(159,180,216,.08)", "anulado": "transparent"}
-    origenes = {"pedido": "Pedido", "ficha": "Ficha", "manual": "Manual", "pendiente": "Pendiente"}
+    origenes = {"pedido": "Pedido", "ficha": "Ficha", "manual": "Manual", "pendiente": "Pendiente",
+                "remision": "Cuenta corriente"}
     filas = []
     for m in movs[:limite]:
         k = _clase(m)
