@@ -5,7 +5,22 @@ Cada etiqueta: código de barras + el número de modelo en texto grande debajo (
 Uso en app.py (pestaña Herramientas):
     from etiquetas import render_etiquetas
     render_etiquetas(supabase)
+
+ETIQUETADOS: cada modelo al que se le genera la etiqueta queda anotado en la tabla `etiquetados`. La app (celular),
+en Inventario → «🏷 En tienda», muestra los etiquetados que NO están vendidos, con foto, medidas y precio: si a una
+pieza se le pierde la etiqueta, se la encuentra ahí. Al venderse desaparece sola (no hace falta borrar nada).
+
+SQL (Supabase → SQL Editor, una sola vez):
+
+    create table if not exists etiquetados (
+      modelo      text primary key,
+      creado      timestamptz not null default now(),   -- primera vez que se le hizo etiqueta
+      actualizado timestamptz not null default now(),   -- última vez (reimpresión)
+      veces       int not null default 1,
+      usuario     text
+    );
 """
+import datetime as dt
 import io
 import json
 import re
@@ -273,6 +288,29 @@ def _buscar_en_inventario(sb, candidatos):
     return hallados
 
 
+def registrar_etiquetados(sb, modelos, usuario=None):
+    """Anota los modelos en `etiquetados` (si ya estaban, suma una impresión). Devuelve un aviso o None."""
+    modelos = list(dict.fromkeys(str(m).strip() for m in modelos if str(m or "").strip()))
+    if not modelos:
+        return None
+    try:
+        antes = {}
+        for i in range(0, len(modelos), 200):
+            for f in (sb.table("etiquetados").select("modelo,veces").in_("modelo", modelos[i:i + 200])
+                      .execute().data or []):
+                antes[f["modelo"]] = int(f.get("veces") or 0)
+        ahora = dt.datetime.now(dt.timezone.utc).isoformat()
+        filas = [{"modelo": m, "actualizado": ahora, "veces": antes.get(m, 0) + 1, "usuario": usuario} for m in modelos]
+        for i in range(0, len(filas), 200):
+            sb.table("etiquetados").upsert(filas[i:i + 200], on_conflict="modelo").execute()
+    except Exception as ex:
+        msg = str(ex)
+        if "etiquetados" in msg and ("does not exist" in msg or "PGRST205" in msg or "schema cache" in msg):
+            return "Las etiquetas salieron, pero falta crear la tabla «etiquetados» (SQL en etiquetas.py)."
+        return f"Las etiquetas salieron, pero no se pudieron anotar en «En tienda»: {msg[:200]}"
+    return None
+
+
 def render_etiquetas(sb):
     st.subheader("Etiquetas con código de barras",
                  help="Genera un PDF con el código de barras (Code 128) del modelo y el número escrito debajo, "
@@ -420,10 +458,15 @@ def render_etiquetas(sb):
             vista = ", ".join(sin_enlace[:30]) + ("…" if len(sin_enlace) > 30 else "")
             st.info(f"{len(sin_enlace)} modelo(s) no están publicados en la tienda; su QR lleva a la página principal: {vista}")
         ss["et_pdf"] = (pdf, len(modelos) * int(copias))
+        quien = (ss.get("user_info") or {}).get("nombre") or (ss.get("user_info") or {}).get("role")
+        aviso = registrar_etiquetados(sb, modelos, quien)
+        ss["et_aviso_en_tienda"] = aviso or f"{len(modelos)} pieza(s) anotadas en «🏷 En tienda» (app del celular)."
 
     if ss.get("et_pdf"):
         pdf, n = ss["et_pdf"]
         st.success(f"Listo: {n} etiqueta(s).")
+        if ss.get("et_aviso_en_tienda"):
+            st.caption(ss["et_aviso_en_tienda"])
         descargar(st, "Descargar PDF de etiquetas", pdf, file_name="etiquetas.pdf", mime="application/pdf", key="et_desc")
         st.caption("Al imprimir, elige la Brother QL-800, el papel que coincide con tu rollo (p. ej. 29 mm × 90 mm), "
                    "tamaño real 100% (sin «ajustar a la página») y sin márgenes.")
