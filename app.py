@@ -461,7 +461,7 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
        else:
            modelo = st.text_input("MODELO *", value=str(datos_previos.get("MODELO", siguiente_modelo)), key=f"{prefix}_modelo").strip()
           
-       nombre = st.text_input("NOMBRE", value=str(datos_previos.get("NOMBRE", "")), key=f"{prefix}_nombre")
+       nombre = st.text_input("NOMBRE *", value=str(datos_previos.get("NOMBRE", "")), key=f"{prefix}_nombre")
        st.caption(f"CARACTERES DEL NOMBRE: **{len(nombre)}**")
       
        descripcion = st.text_area("DESCRIPCIÓN / FICHA TÉCNICA", value=str(datos_previos.get("DESCRIPCION", "")), height=100, key=f"{prefix}_desc")
@@ -965,6 +965,9 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    if st.button("Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
        if not modelo:
            st.error("El campo MODELO es obligatorio.")
+           return
+       if not " ".join(str(nombre or "").split()):
+           st.error("Escribe el NOMBRE del producto: sin nombre no se guarda.")
            return
        if es_consig and not consignador.strip():
            st.error("Es en consignación: escribe el CONSIGNADOR (sección 2).")
