@@ -324,6 +324,42 @@ def palabras_busqueda(texto):
    return pals[:5] or [re.sub(r"[%_*\\]", "", str(texto).strip())]
 
 
+def palabras_simples(texto):
+   """Texto buscado → palabras en minúsculas y sin acentos, para la columna `busqueda` (que también está así).
+   Hasta 5 palabras; las de 1 letra no cuentan."""
+   import unicodedata
+   t = unicodedata.normalize("NFD", str(texto).lower())
+   t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+   pals = [w for w in (re.sub(r"[%_*\\(),]", "", x) for x in t.split()) if len(w) >= 2]
+   return pals[:5] or [re.sub(r"[%_*\\(),]", "", t.strip())]
+
+
+# Columna `busqueda` (ficha en minúsculas y sin acentos, con índice de trigramas: búsqueda rápida).
+# Si todavía no existe en Supabase, se busca como antes (más lento) en datos_json.
+SQL_BUSQUEDA = """
+create extension if not exists unaccent with schema extensions;
+create extension if not exists pg_trgm with schema extensions;
+alter table productos add column if not exists busqueda text;
+create or replace function public.productos_busqueda() returns trigger language plpgsql as $$
+declare t text;
+begin
+  begin t := (new.datos_json::jsonb)::text; exception when others then t := new.datos_json; end;
+  new.busqueda := lower(extensions.unaccent(coalesce(new."MODELO", '') || ' ' || coalesce(t, '')));
+  return new;
+end $$;
+drop trigger if exists productos_busqueda on productos;
+create trigger productos_busqueda before insert or update of datos_json, "MODELO" on productos
+  for each row execute function public.productos_busqueda();
+update productos set datos_json = datos_json;
+create index if not exists productos_busqueda_trgm on productos using gin (busqueda extensions.gin_trgm_ops);
+"""
+
+
+def _falta_col_busqueda(ex):
+   m = str(ex)
+   return "busqueda" in m and ("42703" in m or "does not exist" in m or "schema cache" in m)
+
+
 def to_float(val, default=0.0):
    if val is None or val == "":
        return default
@@ -1463,6 +1499,7 @@ if tab1 is not None:
 
 
           hay_exacto = False      # ¿lo buscado es justo un MODELO que existe?
+          query_vieja = None      # la misma búsqueda sin la columna `busqueda` (por si aún no existe)
           with st.spinner("Consultando inventario..."):
               # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
               if mostrar_ultimos or solo_sin_precio:
@@ -1483,13 +1520,24 @@ if tab1 is not None:
                   if hay_exacto and not st.session_state.get("ver_parciales"):
                       query = query.eq("MODELO", busqueda)
                   else:
-                      query = query.or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%")
+                      _col = "datos_json" if st.session_state.get("_sin_col_busqueda") else "busqueda"
+                      query = query.or_(f"MODELO.ilike.%{busqueda}%,{_col}.ilike.%{busqueda}%")
+                      query_vieja = lambda: (supabase.table("productos").select("*", count="exact")
+                                             .or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%"))
               else:
                   # Texto: cada palabra tiene que aparecer en la ficha, sin importar acentos ni el orden
                   # («lampara bronce» encuentra «Lámpara de bronce» y «bronce, lámpara»)
-                  query = supabase.table("productos").select("*", count="exact")
-                  for _pal in palabras_busqueda(busqueda):
-                      query = query.ilike("datos_json", f"%{_pal}%")
+                  def _q_texto(vieja=False):
+                      q = supabase.table("productos").select("*", count="exact")
+                      if vieja:                      # sin la columna `busqueda`: más lento
+                          for _pal in palabras_busqueda(busqueda):
+                              q = q.ilike("datos_json", f"%{_pal}%")
+                      else:
+                          for _pal in palabras_simples(busqueda):
+                              q = q.ilike("busqueda", f"%{_pal}%")
+                      return q
+                  query = _q_texto(bool(st.session_state.get("_sin_col_busqueda")))
+                  query_vieja = lambda: _q_texto(True)
           
               resp, ultimo_error = None, None
               if solo_sin_precio:
@@ -1519,6 +1567,10 @@ if tab1 is not None:
                           break
                       except APIError as e:
                           ultimo_error = e
+                          if query_vieja is not None and _falta_col_busqueda(e):
+                              st.session_state["_sin_col_busqueda"] = True
+                              query, query_vieja = query_vieja(), None
+                              continue
                           time.sleep(1)
                   if resp is None:
                       st.error(f"No se pudo consultar la base de datos: {ultimo_error}")
@@ -1762,4 +1814,4 @@ if tab5 is not None:
       else:
           st.info("Tu rol no tiene acceso a esta sección.")
 
-      #Para iniciar, en terminal : streamlit run app.py
+      #Para iniciar, en terminal : streamlit run app.py
