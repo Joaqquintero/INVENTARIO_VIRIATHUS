@@ -58,6 +58,13 @@ h3, h4 { font-weight: 500 !important; }
 [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 2px; }
 hr { border-color: #C4BD97 !important; }
 [data-testid="stSidebar"] { border-right: 1px solid #C4BD97; }
+/* Ficha (alta / editar): la tarjeta de la foto acompaña el scroll (lo hace _SEGUIR_SCROLL_JS);
+   en pantallas angostas va arriba y queda fija ahí */
+[class*="st-key-ficha_foto_"] { position: relative; z-index: 3; will-change: transform; }
+@media (max-width: 640px) {
+    div[data-testid="stColumn"]:has([class*="st-key-ficha_foto_"]),
+    div[data-testid="column"]:has([class*="st-key-ficha_foto_"]) { position: static; order: -1; }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -464,8 +471,94 @@ def guardar_producto_db(modelo_key, datos_dict):
 _fragmento = getattr(st, "fragment", None) or (lambda f: f)
 
 
+# Hace que la tarjeta de la foto baje junto con el scroll. Con CSS «sticky» no alcanza: Streamlit pone contenedores
+# que lo cortan. Este script corre UNA vez en la página (no en el cuadrito invisible donde se carga) y en cada scroll
+# mueve la tarjeta lo justo para que quede a la vista, sin salirse de su fila. En pantallas angostas no la mueve.
+_SEGUIR_SCROLL_JS = r"""
+<script>
+(function () {
+  const P = window.parent;
+  if (P.__fichaFotoScroll) { P.__fichaFotoScroll(); return; }
+  P.eval(`
+    (function () {
+      function scroller(el) {
+        for (let e = el.parentElement; e && e !== document.body; e = e.parentElement) {
+          const o = getComputedStyle(e).overflowY;
+          if ((o === "auto" || o === "scroll") && e.scrollHeight > e.clientHeight) return e;
+        }
+        return null;
+      }
+      function ajustar() {
+        document.querySelectorAll('[class*="st-key-ficha_foto_"]').forEach(function (card) {
+          const col = card.closest('[data-testid="stColumn"],[data-testid="column"]');
+          const fila = col && col.parentElement;
+          if (!fila || window.innerWidth <= 640) { card.style.transform = ""; return; }
+          const sc = scroller(fila);
+          const arriba = sc ? sc.getBoundingClientRect().top + 12 : 70;     // debajo de la barra de Streamlit
+          const f = fila.getBoundingClientRect();
+          const y = Math.max(0, Math.min(arriba - f.top, f.height - card.offsetHeight));
+          card.style.transform = "translateY(" + Math.round(y) + "px)";
+        });
+      }
+      let pendiente = false;
+      function alMover() {
+        if (pendiente) return;
+        pendiente = true;
+        requestAnimationFrame(function () { pendiente = false; ajustar(); });
+      }
+      document.addEventListener("scroll", alMover, true);    // también el scroll de la ventana de «Editar»
+      window.addEventListener("resize", alMover);
+      window.__fichaFotoScroll = alMover;
+      alMover();
+    })();
+  `);
+})();
+</script>
+"""
+
+
+def _tarjeta_foto(prefix, modelo_existente):
+   """Tarjeta de la foto (columna derecha, acompaña el scroll). Devuelve la foto nueva subida o None.
+   La foto nueva se sube a Storage al tocar «Guardar Producto Completo»."""
+   is_edit = modelo_existente is not None
+   st.markdown(f"**Modelo {modelo_existente}**" if is_edit else "**Producto nuevo**")
+   lugar = st.empty()                                   # la foto va arriba del botón de subir
+   nueva = st.file_uploader("Cambiar foto" if is_edit else "Subir foto",
+                            type=["jpg", "jpeg", "png", "webp"], key=f"{prefix}_uploader_foto")
+   url = None
+   if is_edit:
+       from cotizaciones import _url_foto_inventario, _foto_existe
+       url = _url_foto_inventario(supabase, modelo_existente)
+       if not _foto_existe(url):
+           url = None
+   if nueva is not None:
+       lugar.image(nueva, use_container_width=True)
+       st.caption("Foto nueva: se sube al guardar.")
+   elif url:
+       lugar.image(url, use_container_width=True)
+       st.link_button("🔍 Ver en grande", url, use_container_width=True)
+   else:
+       lugar.info("Sin foto")
+   return nueva
+
+
 @_fragmento
 def render_formulario_producto(datos_previos={}, modelo_existente=None):
+   """Ficha (alta o edición): el formulario a la izquierda y la foto a la derecha, que acompaña el scroll.
+   En pantallas angostas la foto queda arriba (CSS «ficha_foto_» al principio del archivo)."""
+   version_alta = st.session_state.get("alta_version", 0)
+   prefix = f"edit_{modelo_existente}" if modelo_existente is not None else f"nuevo_prod_{version_alta}"
+   cuerpo, lado = st.columns([3.3, 1], gap="medium")
+   with lado:
+       with st.container(key=f"ficha_foto_{prefix}", border=True):
+           nueva_foto = _tarjeta_foto(prefix, modelo_existente)
+       import streamlit.components.v1 as _componentes
+       _componentes.html(_SEGUIR_SCROLL_JS, height=0)     # mueve la tarjeta con el scroll
+   with cuerpo:
+       _formulario_producto(datos_previos, modelo_existente, nueva_foto)
+
+
+def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual):
    is_edit = modelo_existente is not None
    # En el alta, el prefijo lleva un número de versión: al guardar bien se sube la versión
    # y todos los campos se crean de nuevo (vacíos). Si hay error, la versión no cambia
@@ -478,17 +571,6 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
            st.success(aviso_ok)
    siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
   
-   # --- SECCIÓN FOTO DE PORTADA EN ALTA / EDICIÓN ---
-   st.header("FOTO DE PORTADA")
-   nueva_foto_manual = st.file_uploader(
-       "Subir / Asignar foto de portada (.jpg, .png)",
-       type=["jpg", "jpeg", "png", "webp"],
-       key=f"{prefix}_uploader_foto"
-   )
-   if nueva_foto_manual:
-       st.image(nueva_foto_manual, caption="Vista previa de la portada a subir", width=250)
-  
-   st.divider()
    st.header("1. SECCIÓN PRODUCTO")
    col1, col2 = st.columns(2)
    with col1:
@@ -1338,29 +1420,6 @@ tab_reportes = _seccion_si("Reportes")
 def modal_editar_completo(mod_p, pdata):
    st.caption(f"Gestión y edición del modelo: **{mod_p}**")
   
-   # Opción para cambiar foto
-   with st.expander("Cambiar / Subir Foto de Portada"):
-       nueva_foto = st.file_uploader("Selecciona una imagen (.jpg, .png)", type=["jpg", "jpeg", "png", "webp"], key=f"uploader_{mod_p}")
-       if nueva_foto is not None:
-           if st.button("Subir Imagen a Supabase", use_container_width=True, key=f"btn_upload_img_{mod_p}"):
-               with st.spinner("Subiendo imagen..."):
-                   try:
-                       bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto.read())
-                       nombre_remoto = f"{mod_p}.jpg"
-                       supabase.storage.from_("imagenes").upload(
-                           path=nombre_remoto,
-                           file=bytes_img,
-                           file_options={"content-type": "image/jpeg", "upsert": "true"}
-                       )
-                       sb_url = st.secrets.get("SUPABASE_URL", "")
-                       url_publica = f"{sb_url}/storage/v1/object/public/imagenes/{nombre_remoto}"
-                       supabase.table("productos").update({"RUTA_IMAGEN": url_publica}).eq("MODELO", mod_p).execute()
-                       st.session_state["aviso_foto"] = f"Foto del modelo {mod_p} actualizada: {kb_antes:,} KB → {kb_despues:,} KB."
-                       st.rerun()
-                   except Exception as ex_foto:
-                       st.error(f"Error: {ex_foto}")
-
-
    # Opción para eliminar
    with st.expander("Zona de Peligro: Eliminar Producto"):
        st.warning("Esta acción borrará el producto permanentemente de Supabase.")
