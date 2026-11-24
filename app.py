@@ -524,7 +524,7 @@ _SEGUIR_SCROLL_JS = r"""
 
 def _tarjeta_foto(prefix, modelo_existente):
    """Tarjeta de la foto (columna derecha, acompaña el scroll). Devuelve la foto nueva subida o None.
-   La foto nueva se sube a Storage al tocar «Guardar Producto Completo»."""
+   La foto nueva se sube a Storage al tocar «💾 Guardar»."""
    is_edit = modelo_existente is not None
    st.markdown(f"**Modelo {modelo_existente}**" if is_edit else "**Producto nuevo**")
    lugar = st.empty()                                   # la foto va arriba del botón de subir
@@ -557,13 +557,18 @@ def render_formulario_producto(datos_previos={}, modelo_existente=None):
    with lado:
        with st.container(key=f"ficha_foto_{prefix}", border=True):
            nueva_foto = _tarjeta_foto(prefix, modelo_existente)
+           # «Guardar» fijo debajo de la foto (acompaña el scroll): es el botón para guardar la ficha
+           guardar_arriba = st.button("💾 Guardar", type="primary", use_container_width=True,
+                                      key=f"{prefix}_guardar_lado")
+           lado_guardar = (guardar_arriba, st.container())     # aquí salen los avisos al guardar desde la tarjeta
        import streamlit.components.v1 as _componentes
        _componentes.html(_SEGUIR_SCROLL_JS, height=0)     # mueve la tarjeta con el scroll
    with cuerpo:
-       _formulario_producto(datos_previos, modelo_existente, nueva_foto)
+       _formulario_producto(datos_previos, modelo_existente, nueva_foto, lado_guardar)
 
 
-def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual):
+def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual, lado_guardar=None):
+   """lado_guardar = (¿se tocó «Guardar» en la tarjeta de la foto?, contenedor de la tarjeta para los avisos)."""
    is_edit = modelo_existente is not None
    # En el alta, el prefijo lleva un número de versión: al guardar bien se sube la versión
    # y todos los campos se crean de nuevo (vacíos). Si hay error, la versión no cambia
@@ -574,6 +579,7 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual):
        aviso_ok = st.session_state.pop("alta_aviso_ok", None)
        if aviso_ok:
            st.success(aviso_ok)
+           st.balloons()                                   # 🎈 producto nuevo guardado
    siguiente_modelo = obtener_siguiente_modelo() if not is_edit and 'obtener_siguiente_modelo' in globals() else ""
   
    st.header("1. SECCIÓN PRODUCTO")
@@ -1084,180 +1090,183 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual):
                          "PRECIO CASA PALACIO CON IVA REDONDEADO * CANTIDAD")
 
 
-   st.divider()
-   if st.button("Guardar Producto Completo", type="primary", use_container_width=True, key=f"{prefix}_guardar_btn"):
-       if not modelo:
-           st.error("El campo MODELO es obligatorio.")
-           return
-       if not " ".join(str(nombre or "").split()):
-           st.error("Escribe el NOMBRE del producto: sin nombre no se guarda.")
-           return
-       if es_consig and not consignador.strip():
-           st.error("Es en consignación: escribe el CONSIGNADOR (sección 2).")
-           return
-
-       # En alta, no permitir sobrescribir un modelo que ya existe
-       if not is_edit:
-           try:
-               existe = supabase.table("productos").select("MODELO").eq("MODELO", modelo).limit(1).execute()
-               if existe.data:
-                   st.error(f"El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
-                   return
-           except Exception as ex_chk:
-               st.error(f"No se pudo verificar si el modelo ya existe: {ex_chk}")
+   # El único botón para guardar es «💾 Guardar», debajo de la foto (acompaña el scroll).
+   # Los avisos (errores, «guardado») salen ahí mismo, a la vista.
+   if lado_guardar and lado_guardar[0]:
+       with lado_guardar[1]:
+           if not modelo:
+               st.error("El campo MODELO es obligatorio.")
+               return
+           if not " ".join(str(nombre or "").split()):
+               st.error("Escribe el NOMBRE del producto: sin nombre no se guarda.")
+               return
+           if es_consig and not consignador.strip():
+               st.error("Es en consignación: escribe el CONSIGNADOR (sección 2).")
                return
 
-
-       # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
-       info_foto = ""
-       if nueva_foto_manual is not None:
-           with st.spinner("Subiendo foto de portada a Supabase Storage..."):
+           # En alta, no permitir sobrescribir un modelo que ya existe
+           if not is_edit:
                try:
-                   bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto_manual.read())
-                   info_foto = f" Foto comprimida: {kb_antes:,} KB → {kb_despues:,} KB."
-                   nombre_remoto = f"{modelo}.jpg"
-                   supabase.storage.from_("imagenes").upload(
-                       path=nombre_remoto,
-                       file=bytes_img,
-                       file_options={"content-type": "image/jpeg", "upsert": "true"}
-                   )
-               except Exception as ex_foto:
-                   st.error(f"No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
+                   existe = supabase.table("productos").select("MODELO").eq("MODELO", modelo).limit(1).execute()
+                   if existe.data:
+                       st.error(f"El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
+                       return
+               except Exception as ex_chk:
+                   st.error(f"No se pudo verificar si el modelo ya existe: {ex_chk}")
                    return
 
 
-       datos_guardar = {
+           # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
+           info_foto = ""
+           if nueva_foto_manual is not None:
+               with st.spinner("Subiendo foto de portada a Supabase Storage..."):
+                   try:
+                       bytes_img, kb_antes, kb_despues = comprimir_foto(nueva_foto_manual.read())
+                       info_foto = f" Foto comprimida: {kb_antes:,} KB → {kb_despues:,} KB."
+                       nombre_remoto = f"{modelo}.jpg"
+                       supabase.storage.from_("imagenes").upload(
+                           path=nombre_remoto,
+                           file=bytes_img,
+                           file_options={"content-type": "image/jpeg", "upsert": "true"}
+                       )
+                   except Exception as ex_foto:
+                       st.error(f"No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
+                       return
 
 
-           "MODELO": modelo, "NOMBRE": " ".join(str(nombre or "").split()), "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
-           "OBSERVACIONES": observaciones,
-           "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
-           "DISPONIBILIDAD": disponibilidad, "DISP": disponibilidad, "UBICACION": ubicacion,
-           "CATEGORIA": categoria, "SUBCATEGORÍA": subcategoria, "ETIQUETAS": etiquetas,
-           "CONSIGNACION": bool(es_consig), "CONSIGNADOR": " ".join(consignador.split()),
-           "FECHA_CONSIGNACION": fecha_consig, "COSTO_CONSIGNACION": round(costo_consig, 2),
-           "NUMERO_PEDIDO": num_pedido, "FECHA_PEDIDO": fecha_pedido, "VENDEDOR": vendedor,
-           "FACTURA": factura, "FECHA_FACTURA": fecha_factura, "STATUS_PAGO_ENTREGA": status_pago_entrega,
-           "PROVEEDOR_COMPRA": prov_compra, "FORMA_PAGO_COMPRA": forma_pago_compra,
-           "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
-           "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
-           "REQUERIMIENTOS": requerimientos,
-           "COMPRAS": [{k: v for k, v in c.items() if k != "_txt"} for c in compras_capturadas],
-           "RESTAURADORES": [{k: v for k, v in r.items() if k != "_txt"} for r in restauradores_capturados],
-           "COSTOS_FINANCIEROS": [{k: v for k, v in b.items() if k != "_txt"} for b in financieros_capturados],
-           "FLETES": [{k: v for k, v in b.items() if k != "_txt"} for b in fletes_capturados],
-           "OTROS_COSTOS_DETALLE": [{k: v for k, v in b.items() if k != "_txt"} for b in otros_capturados],
-           "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
-           "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
-           "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
-           "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
-           "UTILIDAD_BRUTA": num(utilidad_bruta),
-           "UTILIDAD_SHOWROOM": num(utilidad_bruta),                 # compatibilidad con datos/scripts anteriores
-           "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
-           "SUBTOTAL": num(subtotal),
-           "PRECIO_SIN_COMISION_INTERIORISTA": num(subtotal),        # compatibilidad con datos/scripts anteriores
-           "PRECIO_COMISION_INTERIORISTA": num(precio_com_int),
-           "IVA_SHOWROOM": num(iva_sh), "PRECIO_SHOWROOM_CON_IVA": num(precio_sh_con_iva),
-           "REDONDEO_SHOWROOM": num(redondeo_sh),
-           "COMISION_INTERIORISTA_SIN_IVA": num(com_int_sin_iva),
-           "COSTO_MAS_UTILIDAD_VIRIATHUS": num(costo_mas_uv),
-           "UTILIDAD_VIRIATHUS_SIN_IVA": num(util_vir_sin_iva),
-           "UTILIDAD_VIRIATHUS_CON_COMISION": num(util_vir_con_com),
-           "PRECIO_CP_CON_IVA_CALCULADO": num(pvcp_iva), "CP_PRECIO_REDONDEADO": num(pvcp_red),
-           "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
-           "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp),
-           "UNIDADES_COMPRADAS": unidades_compradas,
-           "REABASTOS": (list(datos_previos.get("REABASTOS") or [])
-                         + ([{"unidades": unid_agregar, "fecha": time.strftime("%d/%m/%Y"),
-                              "costo": num(total_costo)}] if unid_agregar else [])),
-           **({"UNIDADES_PEDIDOS": _ped_unid} if _ped_unid else {})
-       }
+           datos_guardar = {
 
 
-       with st.spinner("Guardando en la base de datos..."):
-           try:
-               res = guardar_producto_db(modelo, datos_guardar)
-               guardado_ok = bool(res.data)
-               error_guardado = None if guardado_ok else "Supabase no confirmó el guardado (respuesta vacía)."
-           except Exception as ex:
-               guardado_ok, error_guardado = False, str(ex)
+               "MODELO": modelo, "NOMBRE": " ".join(str(nombre or "").split()), "DESCRIPCION": descripcion, "CEDULA_CURATORIAL": cedula,
+               "OBSERVACIONES": observaciones,
+               "ALTO": alto, "LARGO": largo, "ANCHO_PROF": ancho, "PESO": peso,
+               "DISPONIBILIDAD": disponibilidad, "DISP": disponibilidad, "UBICACION": ubicacion,
+               "CATEGORIA": categoria, "SUBCATEGORÍA": subcategoria, "ETIQUETAS": etiquetas,
+               "CONSIGNACION": bool(es_consig), "CONSIGNADOR": " ".join(consignador.split()),
+               "FECHA_CONSIGNACION": fecha_consig, "COSTO_CONSIGNACION": round(costo_consig, 2),
+               "NUMERO_PEDIDO": num_pedido, "FECHA_PEDIDO": fecha_pedido, "VENDEDOR": vendedor,
+               "FACTURA": factura, "FECHA_FACTURA": fecha_factura, "STATUS_PAGO_ENTREGA": status_pago_entrega,
+               "PROVEEDOR_COMPRA": prov_compra, "FORMA_PAGO_COMPRA": forma_pago_compra,
+               "QUIEN_PAGO_COMPRA": quien_pago_compra, "FECHA_PAGO_COMPRA": fecha_pago_compra,
+               "NOTAS_FORMA_PAGO_COMPRA": notas_pago_compra, "FECHA_ADQUISICION": fecha_adquisicion_compra,
+               "REQUERIMIENTOS": requerimientos,
+               "COMPRAS": [{k: v for k, v in c.items() if k != "_txt"} for c in compras_capturadas],
+               "RESTAURADORES": [{k: v for k, v in r.items() if k != "_txt"} for r in restauradores_capturados],
+               "COSTOS_FINANCIEROS": [{k: v for k, v in b.items() if k != "_txt"} for b in financieros_capturados],
+               "FLETES": [{k: v for k, v in b.items() if k != "_txt"} for b in fletes_capturados],
+               "OTROS_COSTOS_DETALLE": [{k: v for k, v in b.items() if k != "_txt"} for b in otros_capturados],
+               "COSTO_REGISTRADO": to_float(datos_previos.get("COSTO_REGISTRADO", 0)),  # campo ya no visible; se conserva el dato
+               "COSTO_ADQUISICION": c_adq, "COSTO_FINANCIERO": c_fin, "COSTO_RESTAURO": c_rest,
+               "COSTO_FLETES": c_fletes, "OTROS_COSTOS": c_otros,
+               "TOTAL_COSTO": num(total_costo), "FACTOR_VIRIATHUS": factor_viriathus,
+               "UTILIDAD_BRUTA": num(utilidad_bruta),
+               "UTILIDAD_SHOWROOM": num(utilidad_bruta),                 # compatibilidad con datos/scripts anteriores
+               "PRECIO_TOTAL_VIRIATHUS_SIN_IVA": num(ptv_sin_iva),
+               "SUBTOTAL": num(subtotal),
+               "PRECIO_SIN_COMISION_INTERIORISTA": num(subtotal),        # compatibilidad con datos/scripts anteriores
+               "PRECIO_COMISION_INTERIORISTA": num(precio_com_int),
+               "IVA_SHOWROOM": num(iva_sh), "PRECIO_SHOWROOM_CON_IVA": num(precio_sh_con_iva),
+               "REDONDEO_SHOWROOM": num(redondeo_sh),
+               "COMISION_INTERIORISTA_SIN_IVA": num(com_int_sin_iva),
+               "COSTO_MAS_UTILIDAD_VIRIATHUS": num(costo_mas_uv),
+               "UTILIDAD_VIRIATHUS_SIN_IVA": num(util_vir_sin_iva),
+               "UTILIDAD_VIRIATHUS_CON_COMISION": num(util_vir_con_com),
+               "PRECIO_CP_CON_IVA_CALCULADO": num(pvcp_iva), "CP_PRECIO_REDONDEADO": num(pvcp_red),
+               "CP_PRECIO_SIN_IVA": num(cp_sin_iva), "CP_UTILIDAD": num(cp_utilidad),
+               "CP_PORCENTAJE_UTILIDAD": num(cp_pct), "CANTIDAD": cantidad, "TOTAL_CP": num(total_cp),
+               "UNIDADES_COMPRADAS": unidades_compradas,
+               "REABASTOS": (list(datos_previos.get("REABASTOS") or [])
+                             + ([{"unidades": unid_agregar, "fecha": time.strftime("%d/%m/%Y"),
+                                  "costo": num(total_costo)}] if unid_agregar else [])),
+               **({"UNIDADES_PEDIDOS": _ped_unid} if _ped_unid else {})
+           }
 
-       if guardado_ok:
-           try:
-               obtener_siguiente_modelo.clear()
-               _limpiar_memoria()          # que el producto nuevo aparezca ya en «últimos productos»
-           except Exception:
-               pass
-           # Caudal: los costos de compra / restauro que se cargaron o cambiaron restan a quien pagó
-           if _HAY_CAUDAL:
+
+           with st.spinner("Guardando en la base de datos..."):
                try:
-                   import caudal
-                   caudal.sincronizar_ficha(supabase, modelo, datos_previos, datos_guardar,
-                                            user.get("nombre") or user.get("role"))
-               except Exception as ex_caudal:
-                   st.warning(f"El producto se guardó, pero no se pudo registrar en Caudal: {ex_caudal}")
-           # Costos marcados «Pendiente por pagar» → Caudal · Pendientes por pagar
-           try:
-               import pendientes as _pend
-               for _a in _pend.sincronizar_costos_ficha(supabase, modelo, datos_guardar,
-                                                        user.get("nombre") or user.get("role")):
-                   st.warning(_a)
-           except Exception as ex_pend:
-               st.warning(f"El producto se guardó, pero no se pudieron registrar sus costos pendientes por pagar "
-                          f"({ex_pend}). ¿Ya corriste en Supabase el SQL de pendientes?")
-           # Consignación → Caudal · Pendientes por pagar
-           aviso_consig = None
-           if es_consig or datos_previos.get("CONSIGNACION"):
+                   res = guardar_producto_db(modelo, datos_guardar)
+                   guardado_ok = bool(res.data)
+                   error_guardado = None if guardado_ok else "Supabase no confirmó el guardado (respuesta vacía)."
+               except Exception as ex:
+                   guardado_ok, error_guardado = False, str(ex)
+
+           if guardado_ok:
+               try:
+                   obtener_siguiente_modelo.clear()
+                   _limpiar_memoria()          # que el producto nuevo aparezca ya en «últimos productos»
+               except Exception:
+                   pass
+               # Caudal: los costos de compra / restauro que se cargaron o cambiaron restan a quien pagó
+               if _HAY_CAUDAL:
+                   try:
+                       import caudal
+                       caudal.sincronizar_ficha(supabase, modelo, datos_previos, datos_guardar,
+                                                user.get("nombre") or user.get("role"))
+                   except Exception as ex_caudal:
+                       st.warning(f"El producto se guardó, pero no se pudo registrar en Caudal: {ex_caudal}")
+               # Costos marcados «Pendiente por pagar» → Caudal · Pendientes por pagar
                try:
                    import pendientes as _pend
-                   aviso_consig = _pend.sincronizar_consignacion(supabase, modelo, datos_guardar,
-                                                                 user.get("nombre") or user.get("role"))
-               except Exception as ex_consig:
-                   aviso_consig = (f"El producto se guardó, pero no se pudo registrar la consignación en Pendientes "
-                                   f"({ex_consig}). ¿Ya corriste en Supabase el SQL de pendientes?")
-               if aviso_consig:
-                   st.warning(aviso_consig)
-           if is_edit:
-               st.success(f"¡Producto '{modelo}' actualizado correctamente!{info_foto}")
-               # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
-               vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() in ("v", "r")
-               with st.spinner("Actualizando Shopify..."):
-                   # El nombre y la descripción solo se mandan a Shopify si los cambiaste en esta ficha (y no están vacíos)
-                   # Descripción de Shopify = DESCRIPCIÓN + CÉDULA CURATORIAL: se manda si cambió cualquiera de las dos
-                   from shopify_borrador import descripcion_con_cedula as _desc_ced
-                   _desc_nueva = _desc_ced(datos_guardar)
-                   desc_cambio = (_desc_nueva != "" and
-                                  " ".join(_desc_nueva.split()) != " ".join(_desc_ced(datos_previos).split()))
-                   nombre_cambio = (nombre.strip() != "" and
-                                    " ".join(nombre.split()) != " ".join(str(datos_previos.get("NOMBRE", "") or "").split()))
-                   precio_cambio = (num(redondeo_sh) > 0 and
-                                    round(num(redondeo_sh), 2) != round(to_float(datos_previos.get("REDONDEO_SHOWROOM", 0)), 2))
-                   est_sh, msg_sh, _url_sh = actualizar_producto_shopify(
-                       modelo, datos_guardar, enviar_descripcion=desc_cambio, enviar_nombre=nombre_cambio,
-                       enviar_precio=precio_cambio)
+                   for _a in _pend.sincronizar_costos_ficha(supabase, modelo, datos_guardar,
+                                                            user.get("nombre") or user.get("role")):
+                       st.warning(_a)
+               except Exception as ex_pend:
+                   st.warning(f"El producto se guardó, pero no se pudieron registrar sus costos pendientes por pagar "
+                              f"({ex_pend}). ¿Ya corriste en Supabase el SQL de pendientes?")
+               # Consignación → Caudal · Pendientes por pagar
+               aviso_consig = None
+               if es_consig or datos_previos.get("CONSIGNACION"):
+                   try:
+                       import pendientes as _pend
+                       aviso_consig = _pend.sincronizar_consignacion(supabase, modelo, datos_guardar,
+                                                                     user.get("nombre") or user.get("role"))
+                   except Exception as ex_consig:
+                       aviso_consig = (f"El producto se guardó, pero no se pudo registrar la consignación en Pendientes "
+                                       f"({ex_consig}). ¿Ya corriste en Supabase el SQL de pendientes?")
+                   if aviso_consig:
+                       st.warning(aviso_consig)
+               if is_edit:
+                   st.success(f"¡Producto '{modelo}' actualizado correctamente!{info_foto}")
+                   st.balloons()                           # 🎈 ficha guardada
+                   # Si el producto ya está en Shopify (SKU = modelo), se mandan los cambios
+                   vendido_antes = str(datos_previos.get("DISP", datos_previos.get("DISPONIBILIDAD", ""))).strip().lower() in ("v", "r")
+                   with st.spinner("Actualizando Shopify..."):
+                       # El nombre y la descripción solo se mandan a Shopify si los cambiaste en esta ficha (y no están vacíos)
+                       # Descripción de Shopify = DESCRIPCIÓN + CÉDULA CURATORIAL: se manda si cambió cualquiera de las dos
+                       from shopify_borrador import descripcion_con_cedula as _desc_ced
+                       _desc_nueva = _desc_ced(datos_guardar)
+                       desc_cambio = (_desc_nueva != "" and
+                                      " ".join(_desc_nueva.split()) != " ".join(_desc_ced(datos_previos).split()))
+                       nombre_cambio = (nombre.strip() != "" and
+                                        " ".join(nombre.split()) != " ".join(str(datos_previos.get("NOMBRE", "") or "").split()))
+                       precio_cambio = (num(redondeo_sh) > 0 and
+                                        round(num(redondeo_sh), 2) != round(to_float(datos_previos.get("REDONDEO_SHOWROOM", 0)), 2))
+                       est_sh, msg_sh, _url_sh = actualizar_producto_shopify(
+                           modelo, datos_guardar, enviar_descripcion=desc_cambio, enviar_nombre=nombre_cambio,
+                           enviar_precio=precio_cambio)
+                       if est_sh == "ok":
+                           registrar_envio(supabase, modelo, datos_guardar,
+                                           [c for c, f in (("nombre", nombre_cambio), ("desc", desc_cambio), ("precio", precio_cambio)) if f])
+                       if est_sh == "ok" and (disponibilidad in ("v", "r")) != vendido_antes:
+                           est_sh2, msg_sh2 = marcar_disponibilidad_shopify(modelo, disponibilidad in ("v", "r"))
+                           if est_sh2 == "error":
+                               est_sh, msg_sh = "error", msg_sh2
+                           else:
+                               msg_sh = msg_sh + " " + msg_sh2
                    if est_sh == "ok":
-                       registrar_envio(supabase, modelo, datos_guardar,
-                                       [c for c, f in (("nombre", nombre_cambio), ("desc", desc_cambio), ("precio", precio_cambio)) if f])
-                   if est_sh == "ok" and (disponibilidad in ("v", "r")) != vendido_antes:
-                       est_sh2, msg_sh2 = marcar_disponibilidad_shopify(modelo, disponibilidad in ("v", "r"))
-                       if est_sh2 == "error":
-                           est_sh, msg_sh = "error", msg_sh2
-                       else:
-                           msg_sh = msg_sh + " " + msg_sh2
-               if est_sh == "ok":
-                   st.info("" + msg_sh)
-               elif est_sh == "error":
-                   st.warning("Se guardó en el inventario, pero NO en Shopify: " + msg_sh +
-                              " Puedes reintentarlo con Sincronizar con Shopify en la ficha.")
+                       st.info("" + msg_sh)
+                   elif est_sh == "error":
+                       st.warning("Se guardó en el inventario, pero NO en Shopify: " + msg_sh +
+                                  " Puedes reintentarlo con Sincronizar con Shopify en la ficha.")
+               else:
+                   # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
+                   st.session_state["alta_version"] = version_alta + 1
+                   st.session_state["alta_aviso_ok"] = (f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
+                                                        + (f" Ojo: {aviso_consig}" if aviso_consig else ""))
+                   st.rerun()
            else:
-               # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
-               st.session_state["alta_version"] = version_alta + 1
-               st.session_state["alta_aviso_ok"] = (f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
-                                                    + (f" Ojo: {aviso_consig}" if aviso_consig else ""))
-               st.rerun()
-       else:
-           st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
-                    "Corrige el problema y vuelve a tocar Guardar; el formulario conserva tus datos.")
+               st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
+                        "Corrige el problema y vuelve a tocar Guardar; el formulario conserva tus datos.")
 
 
    st.divider()
