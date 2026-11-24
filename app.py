@@ -588,6 +588,7 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual, lad
        if is_edit:
            modelo = st.text_input("MODELO", value=str(modelo_existente), disabled=True, key=f"{prefix}_modelo")
        else:
+           st.session_state.setdefault(f"{prefix}_sugerido", str(siguiente_modelo))   # el número que propuso la página
            modelo = st.text_input("MODELO *", value=str(datos_previos.get("MODELO", siguiente_modelo)), key=f"{prefix}_modelo").strip()
           
        nombre = st.text_input("NOMBRE *", value=str(datos_previos.get("NOMBRE", "")), key=f"{prefix}_nombre")
@@ -1104,16 +1105,43 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual, lad
                st.error("Es en consignación: escribe el CONSIGNADOR (sección 2).")
                return
 
-           # En alta, no permitir sobrescribir un modelo que ya existe
+           # En alta: APARTAR el número antes de nada (insert, no upsert). La base no deja dos filas con el mismo
+           # MODELO, así que si dos personas guardan el mismo número a la vez, solo una lo consigue: nunca se pisan.
+           # Si el número era el que propuso la página y otra persona lo acaba de usar, se toma el siguiente libre.
+           apartado = None
+           modelo_pedido = modelo
            if not is_edit:
-               try:
-                   existe = supabase.table("productos").select("MODELO").eq("MODELO", modelo).limit(1).execute()
-                   if existe.data:
-                       st.error(f"El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; el formulario conserva tus datos.")
-                       return
-               except Exception as ex_chk:
-                   st.error(f"No se pudo verificar si el modelo ya existe: {ex_chk}")
+               auto = modelo == st.session_state.get(f"{prefix}_sugerido")
+               for _ in range(10):
+                   try:
+                       supabase.table("productos").insert({"MODELO": modelo, "datos_json": json.dumps(
+                           {"MODELO": modelo, "NOMBRE": " ".join(str(nombre or "").split())}, ensure_ascii=False)}).execute()
+                       apartado = modelo
+                       break
+                   except Exception as ex_chk:
+                       repetido = "23505" in str(ex_chk) or "duplicate key" in str(ex_chk)
+                       if not repetido:
+                           st.error(f"No se pudo guardar: {ex_chk}")
+                           return
+                       if not (auto and modelo.isdigit()):
+                           st.error(f"El modelo '{modelo}' ya existe en el inventario. Cambia el número de MODELO; "
+                                    "el formulario conserva tus datos.")
+                           return
+                       modelo = str(int(modelo) + 1)        # lo usó otra persona: probar con el siguiente
+               if apartado is None:
+                   st.error("No se encontró un número libre. Vuelve a intentar.")
                    return
+               if modelo != modelo_pedido:
+                   st.warning(f"El {modelo_pedido} lo acaba de usar otra persona: este producto se guarda como "
+                              f"**{modelo}**.")
+
+           def _soltar_numero():
+               """Si algo falla después de apartar el número, se libera (se borra la fila apartada)."""
+               if apartado:
+                   try:
+                       supabase.table("productos").delete().eq("MODELO", apartado).execute()
+                   except Exception:
+                       pass
 
 
            # SI SE SUBIÓ UNA FOTO NUEVA EN EL FORMULARIO, SUBIRLA PRIMERO A STORAGE
@@ -1130,6 +1158,7 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual, lad
                            file_options={"content-type": "image/jpeg", "upsert": "true"}
                        )
                    except Exception as ex_foto:
+                       _soltar_numero()
                        st.error(f"No se pudo subir la foto: {ex_foto}. El producto NO se guardó; revisa y vuelve a intentar.")
                        return
 
@@ -1262,9 +1291,12 @@ def _formulario_producto(datos_previos, modelo_existente, nueva_foto_manual, lad
                    # Éxito: nueva versión del formulario = campos vacíos para el siguiente producto
                    st.session_state["alta_version"] = version_alta + 1
                    st.session_state["alta_aviso_ok"] = (f"¡Producto '{modelo}' guardado correctamente!{info_foto} Ya puedes capturar el siguiente."
+                                                        + (f" (El {modelo_pedido} lo había usado otra persona, por eso quedó como {modelo}.)"
+                                                           if modelo != modelo_pedido else "")
                                                         + (f" Ojo: {aviso_consig}" if aviso_consig else ""))
                    st.rerun()
            else:
+               _soltar_numero()
                st.error(f"El producto '{modelo}' NO se guardó: {error_guardado} "
                         "Corrige el problema y vuelve a tocar Guardar; el formulario conserva tus datos.")
 
