@@ -58,6 +58,11 @@ h3, h4 { font-weight: 500 !important; }
 [data-testid="stVerticalBlockBorderWrapper"] { border-radius: 2px; }
 hr { border-color: #C4BD97 !important; }
 [data-testid="stSidebar"] { border-right: 1px solid #C4BD97; }
+/* Sin «palidecer»: mientras Streamlit actualiza, lo de la pantalla queda igual (no se pone semitransparente).
+   Sigue el indicador «Running» de arriba a la derecha. */
+[data-stale="true"], .stale-element, [data-testid="stElementContainer"][data-stale="true"] {
+    opacity: 1 !important; transition: none !important; filter: none !important;
+}
 /* Ficha (alta / editar): la tarjeta de la foto acompaña el scroll (lo hace _SEGUIR_SCROLL_JS);
    en pantallas angostas va arriba y queda fija ahí */
 [class*="st-key-ficha_foto_"] { position: relative; z-index: 3; will-change: transform; }
