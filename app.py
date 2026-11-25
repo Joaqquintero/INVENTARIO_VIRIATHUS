@@ -203,6 +203,9 @@ def _clave_modelo(m):
    return (int(base) if base.isdigit() else -1, str(m))
 
 
+MAX_ORDENAR = 6000          # búsquedas enormes (p. ej. «de»): se ordenan las primeras 6000 coincidencias
+
+
 def productos_por_nuevos(armar, desde, n):
    """Página de resultados del más nuevo al más viejo (consignaciones). `armar(sel)` devuelve la consulta ya filtrada.
    1) trae SOLO la columna MODELO de todo lo encontrado (liviano), 2) la ordena como número,
@@ -222,7 +225,7 @@ def productos_por_nuevos(armar, desde, n):
                q = q.gt("MODELO", ultimo)
            filas = q.limit(1000).execute().data or []
            modelos += [str(f.get("MODELO", "")).strip() for f in filas]
-           if len(filas) < 1000:
+           if len(filas) < 1000 or len(modelos) >= MAX_ORDENAR:
                break
            ultimo = filas[-1].get("MODELO")
        modelos.sort(key=_clave_modelo, reverse=True)
@@ -1685,6 +1688,8 @@ if tab1 is not None:
       if solo_sin_precio:
           busqueda = "__sin_precio__"         # la búsqueda de texto no se usa con esta casilla
   
+      if busqueda and not modo_rango:
+          por_nuevos = True                     # toda búsqueda: del modelo más nuevo al más viejo
       if solo_sin_precio:
           solo_consig = por_nuevos = False      # «sin redondeo» ya viene del más nuevo al más viejo
       mostrar_ultimos = not busqueda and not solo_consig
