@@ -8,6 +8,12 @@ Memoria de corto plazo (st.cache_data) para las consultas pesadas, con limpieza 
 import streamlit as st
 
 _FUNCIONES = []
+_VERSION = [0]          # sube cada vez que alguien guarda algo: las memorias de cada sesión saben que quedaron viejas
+
+
+def version():
+    """Número que cambia cada vez que se llama a limpiar() (o sea, cada vez que alguien guarda algo)."""
+    return _VERSION[0]
 
 
 def guardar_en_memoria(ttl):
@@ -19,6 +25,7 @@ def guardar_en_memoria(ttl):
 
 
 def limpiar():
+    _VERSION[0] += 1
     for f in _FUNCIONES:
         try:
             f.clear()

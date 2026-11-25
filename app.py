@@ -101,7 +101,11 @@ def init_supabase():
 supabase = init_supabase()
 
 
-from caches import guardar_en_memoria as _guardar_en_memoria, limpiar as _limpiar_memoria
+from caches import guardar_en_memoria as _guardar_en_memoria, limpiar as _limpiar_memoria, version as _version_memoria
+
+# Lo único que usan las tarjetas y la ficha. Sin «*»: así no viaja la columna `busqueda` (casi una copia
+# de datos_json que solo sirve para buscar) y cada página pesa cerca de la mitad.
+COLS_PRODUCTO = "MODELO,datos_json,RUTA_IMAGEN"
 
 
 @_guardar_en_memoria(ttl=300)
@@ -134,7 +138,7 @@ def ultimos_productos(desde, n):
    pagina = modelos[desde:desde + n]
    if not pagina:
        return [], len(modelos)
-   resp = supabase.table("productos").select("*").in_("MODELO", pagina).execute()
+   resp = supabase.table("productos").select(COLS_PRODUCTO).in_("MODELO", pagina).execute()
    orden = {m: i for i, m in enumerate(pagina)}
    datos = sorted(resp.data or [], key=lambda r: orden.get(str(r.get("MODELO", "")).strip(), len(orden)))
    return datos, len(modelos)
@@ -179,11 +183,57 @@ def productos_sin_precio(desde, n):
    pagina = modelos[desde:desde + n]
    if not pagina:
        return [], len(modelos)
-   resp = supabase.table("productos").select("*").in_("MODELO", pagina).execute()
+   resp = supabase.table("productos").select(COLS_PRODUCTO).in_("MODELO", pagina).execute()
    orden = {m: i for i, m in enumerate(pagina)}
    datos = sorted(resp.data or [], key=lambda r: orden.get(str(r.get("MODELO", "")).strip(), len(orden)))
    return datos, len(modelos)
 
+
+
+# Filtro «Solo consignaciones» de Consultar / Buscar
+# Así queda la marca de consignación dentro de la columna `busqueda` (y de datos_json): sirve para filtrar
+# sin abrir cada ficha. ilike no distingue mayúsculas, así que el mismo patrón sirve para las dos columnas.
+PATRON_CONSIG = '%"consignacion": true%'
+
+
+def _clave_modelo(m):
+   """Para ordenar del más nuevo al más viejo: el MODELO es texto («999» > «32467»), así que se compara
+   como número. Los que no son número (G-020, 1046VTH…) van al final."""
+   base = str(m).split(".")[0]
+   return (int(base) if base.isdigit() else -1, str(m))
+
+
+def productos_por_nuevos(armar, desde, n):
+   """Página de resultados del más nuevo al más viejo (consignaciones). `armar(sel)` devuelve la consulta ya filtrada.
+   1) trae SOLO la columna MODELO de todo lo encontrado (liviano), 2) la ordena como número,
+   3) trae las fichas completas solo de los 30 de esta página. Devuelve (lista, total).
+   La lista de modelos se guarda 60 s para no repetirla al pasar de página."""
+   ss = st.session_state
+   clave = armar.clave
+   guardado = ss.get("_orden_modelos")
+   if guardado and guardado[0] == clave and time.time() - guardado[1] < 60:
+       modelos = guardado[2]
+   else:
+       # De a 1000, cada vez «los que siguen después del último que llegó» (no «saltear N»)
+       modelos, ultimo = [], None
+       while True:
+           q = armar("MODELO").order("MODELO")
+           if ultimo is not None:
+               q = q.gt("MODELO", ultimo)
+           filas = q.limit(1000).execute().data or []
+           modelos += [str(f.get("MODELO", "")).strip() for f in filas]
+           if len(filas) < 1000:
+               break
+           ultimo = filas[-1].get("MODELO")
+       modelos.sort(key=_clave_modelo, reverse=True)
+       ss["_orden_modelos"] = (clave, time.time(), modelos)
+   pagina = modelos[desde:desde + n]
+   if not pagina:
+       return [], len(modelos)
+   resp = supabase.table("productos").select(COLS_PRODUCTO).in_("MODELO", pagina).execute()
+   orden = {m: i for i, m in enumerate(pagina)}
+   datos = sorted(resp.data or [], key=lambda r: orden.get(str(r.get("MODELO", "")).strip(), len(orden)))
+   return datos, len(modelos)
 
 
 def ventas_de_modelos(modelos):
@@ -1461,8 +1511,24 @@ tab_caudal = _seccion_si("Caudal")
 tab_reportes = _seccion_si("Reportes")
 
 
+# Botón «Editar ficha» dentro de un fragmento: al tocarlo se vuelve a correr SOLO este botón (no todo app.py:
+# ni la búsqueda, ni las 30 tarjetas, ni los avisos de arriba) y se abre la ventana de la ficha enseguida.
+@_fragmento
+def _boton_editar(mod_p, pdata, etiqueta, key, ayuda=None):
+   if st.button(etiqueta, key=key, help=ayuda, use_container_width=True):
+       modal_editar_completo(mod_p, pdata)
+
+
 # DIÁLOGO DE EDICIÓN EN MODAL
-@st.dialog("Editar Producto Completo", width="large")
+# Al cerrarla (✕, clic afuera o ESC) la página se recarga: si se guardó algo, la tarjeta muestra lo nuevo;
+# si no, la recarga es corta porque la página sale de su memoria. (Streamlit viejo sin on_dismiss: no recarga.)
+try:
+   _dialogo_ficha = st.dialog("Editar Producto Completo", width="large", on_dismiss="rerun")
+except TypeError:
+   _dialogo_ficha = st.dialog("Editar Producto Completo", width="large")
+
+
+@_dialogo_ficha
 def modal_editar_completo(mod_p, pdata):
    st.caption(f"Gestión y edición del modelo: **{mod_p}**")
   
@@ -1536,8 +1602,8 @@ def _render_lista_busqueda(productos, ventas_pag):
        c_drv.link_button("📷", f"https://drive.google.com/drive/folders/{ID_MASTER_FOTOS}?q={mod_p}",
                          help="Fotos en Google Drive", use_container_width=True, key=f"l_drv_{mod_p}_{idx}")
        if puede(user, "editar_ficha"):
-           if c_edi.button("✏️", key=f"l_edit_{mod_p}_{idx}", help="Editar ficha completa", use_container_width=True):
-               modal_editar_completo(mod_p, pdata)
+           with c_edi:
+               _boton_editar(mod_p, pdata, "✏️", f"l_edit_{mod_p}_{idx}", "Editar ficha completa")
        mensaje = None                              # lo que respondan Shopify va debajo de la fila, a todo lo ancho
        if puede(user, "shopify_botones"):
            if c_shp.button("🛍️", key=f"l_shop_{mod_p}_{idx}", help="Crear borrador en Shopify", use_container_width=True):
@@ -1581,20 +1647,31 @@ if tab1 is not None:
                    "Al ponerle precio y guardar la ficha, el producto sale de esta lista.")
 
       # Cómo se ven los resultados: tarjetas (3 por fila, con todo) o lista (una fila por producto, compacta)
-      _vista_lista = st.radio("Vista", ["▦ Tarjetas", "☰ Lista"], horizontal=True, key="vista_buscar",
-                              label_visibility="collapsed") == "☰ Lista"
+      c_vista, c_orden = st.columns([2, 1])
+      _vista_lista = c_vista.radio("Vista", ["▦ Tarjetas", "☰ Lista"], horizontal=True, key="vista_buscar",
+                                   label_visibility="collapsed") == "☰ Lista"
+      solo_consig = c_orden.checkbox("🤝 Solo consignaciones", key="solo_consig_buscar",
+                                     help="Muestra solo las piezas en consignación, de la más nueva a la más vieja. "
+                                          "Se combina con lo que escribas arriba.")
+      orden_buscar = "consig" if solo_consig else "normal"
+      por_nuevos = solo_consig
 
       modo_rango = rango_desde.isdigit() and rango_hasta.isdigit()
       busqueda = f"{rango_desde} a {rango_hasta}" if modo_rango else busqueda_raw.strip()
       if solo_sin_precio:
           busqueda = "__sin_precio__"         # la búsqueda de texto no se usa con esta casilla
   
-      mostrar_ultimos = not busqueda
-      if busqueda or mostrar_ultimos:
+      if solo_sin_precio:
+          solo_consig = por_nuevos = False      # «sin redondeo» ya viene del más nuevo al más viejo
+      mostrar_ultimos = not busqueda and not solo_consig
+      if busqueda or mostrar_ultimos or solo_consig:
           if "busqueda_anterior" not in st.session_state or st.session_state["busqueda_anterior"] != busqueda:
               st.session_state["busqueda_anterior"] = busqueda
               st.session_state["pagina_actual"] = 0
               st.session_state.pop("ver_parciales", None)   # búsqueda nueva: otra vez solo el modelo exacto
+          if st.session_state.get("orden_anterior") != orden_buscar:
+              st.session_state["orden_anterior"] = orden_buscar
+              st.session_state["pagina_actual"] = 0        # otro orden: volver a la página 1
 
 
           tamano_pagina = 30
@@ -1603,49 +1680,53 @@ if tab1 is not None:
           hasta = desde + tamano_pagina - 1
 
 
-          hay_exacto = False      # ¿lo buscado es justo un MODELO que existe?
-          query_vieja = None      # la misma búsqueda sin la columna `busqueda` (por si aún no existe)
-          with st.spinner("Consultando inventario..."):
-              # Sanitizar búsqueda (quitar caracteres que rompan PostgREST)
-              if mostrar_ultimos or solo_sin_precio:
-                  query = None
-              elif modo_rango:
-                  limite_sup = str(int(rango_hasta) + 1)
-                  query = supabase.table("productos").select("*", count="exact")
-                  query = query.gte("MODELO", rango_desde).lt("MODELO", limite_sup).order("MODELO")
+          # Memoria de la página (1 minuto): si nada cambió (misma búsqueda, orden y página, y nadie guardó nada),
+          # al tocar cualquier botón o cerrar la ficha la página se arma con lo que ya tiene, sin ir a Supabase.
+          _clave_pag = (busqueda, orden_buscar, bool(st.session_state.get("ver_parciales")), solo_sin_precio,
+                        pagina, _version_memoria())
+          _memo = st.session_state.get("_pag_memo")
+          _usar_memo = bool(_memo and _memo["clave"] == _clave_pag and time.time() - _memo["t"] < 60)
+
+          hay_exacto = _memo["hay_exacto"] if _usar_memo else False   # ¿lo buscado es justo un MODELO que existe?
+          if busqueda.isdigit() and not modo_rango and not solo_sin_precio and not _usar_memo:
+              # Solo números: si existe ese MODELO exacto se muestra solo ese. Si no existe (o se pide ver
+              # también los parecidos), como siempre: modelos que contienen el número o fichas que lo mencionan.
+              try:
+                  hay_exacto = bool(supabase.table("productos").select("MODELO")
+                                    .eq("MODELO", busqueda).limit(1).execute().data)
+              except Exception:
+                  hay_exacto = False
+
+          def armar(sel=COLS_PRODUCTO, vieja=None):
+              """La consulta con todos los filtros elegidos. `sel`: columnas a traer (las de la ficha o solo "MODELO").
+              `vieja`: sin la columna `busqueda` (más lento, por si todavía no existe en Supabase)."""
+              if vieja is None:
+                  vieja = bool(st.session_state.get("_sin_col_busqueda"))
+              col = "datos_json" if vieja else "busqueda"
+              q = supabase.table("productos").select(sel, count=None if sel == "MODELO" else "exact")
+              if modo_rango:
+                  q = q.gte("MODELO", rango_desde).lt("MODELO", str(int(rango_hasta) + 1))
               elif busqueda.isdigit():
-                  # Solo números: si existe ese MODELO exacto se muestra solo ese. Si no existe (o se pide ver
-                  # también los parecidos), como siempre: modelos que contienen el número o fichas que lo mencionan.
-                  try:
-                      hay_exacto = bool(supabase.table("productos").select("MODELO")
-                                        .eq("MODELO", busqueda).limit(1).execute().data)
-                  except Exception:
-                      hay_exacto = False
-                  query = supabase.table("productos").select("*", count="exact")
                   if hay_exacto and not st.session_state.get("ver_parciales"):
-                      query = query.eq("MODELO", busqueda)
+                      q = q.eq("MODELO", busqueda)
                   else:
-                      _col = "datos_json" if st.session_state.get("_sin_col_busqueda") else "busqueda"
-                      query = query.or_(f"MODELO.ilike.%{busqueda}%,{_col}.ilike.%{busqueda}%")
-                      query_vieja = lambda: (supabase.table("productos").select("*", count="exact")
-                                             .or_(f"MODELO.ilike.%{busqueda}%,datos_json.ilike.%{busqueda}%"))
-              else:
+                      q = q.or_(f"MODELO.ilike.%{busqueda}%,{col}.ilike.%{busqueda}%")
+              elif busqueda:
                   # Texto: cada palabra tiene que aparecer en la ficha, sin importar acentos ni el orden
                   # («lampara bronce» encuentra «Lámpara de bronce» y «bronce, lámpara»)
-                  def _q_texto(vieja=False):
-                      q = supabase.table("productos").select("*", count="exact")
-                      if vieja:                      # sin la columna `busqueda`: más lento
-                          for _pal in palabras_busqueda(busqueda):
-                              q = q.ilike("datos_json", f"%{_pal}%")
-                      else:
-                          for _pal in palabras_simples(busqueda):
-                              q = q.ilike("busqueda", f"%{_pal}%")
-                      return q
-                  query = _q_texto(bool(st.session_state.get("_sin_col_busqueda")))
-                  query_vieja = lambda: _q_texto(True)
-          
+                  for _pal in (palabras_busqueda(busqueda) if vieja else palabras_simples(busqueda)):
+                      q = q.ilike(col, f"%{_pal}%")
+              if solo_consig:
+                  q = q.ilike(col, PATRON_CONSIG)
+              return q
+          # Para guardar la lista de modelos mientras no cambie nada de lo elegido
+          armar.clave = (busqueda, orden_buscar, bool(st.session_state.get("ver_parciales")), hay_exacto)
+
+          with st.spinner("Consultando inventario..."):
               resp, ultimo_error = None, None
-              if solo_sin_precio:
+              if _usar_memo:
+                  productos, total_coincidencias = _memo["productos"], _memo["total"]
+              elif solo_sin_precio:
                   productos, total_coincidencias = [], 0
                   try:
                       productos, total_coincidencias = productos_sin_precio(desde, tamano_pagina)
@@ -1666,24 +1747,32 @@ if tab1 is not None:
                       st.warning(f"No se pudieron cargar los últimos productos (la base tardó demasiado). "
                                  f"Recarga en unos segundos o busca por modelo. Detalle: {ultimo_error}")
               else:
+                  productos, total_coincidencias = None, 0
                   for intento in range(3):
                       try:
-                          resp = query.range(desde, hasta).execute()
+                          if por_nuevos:
+                              productos, total_coincidencias = productos_por_nuevos(armar, desde, tamano_pagina)
+                          else:
+                              q = armar()
+                              if modo_rango:
+                                  q = q.order("MODELO")
+                              resp = q.range(desde, hasta).execute()
+                              productos = resp.data
+                              total_coincidencias = resp.count if resp.count is not None else len(productos)
                           break
                       except APIError as e:
                           ultimo_error = e
-                          if query_vieja is not None and _falta_col_busqueda(e):
-                              st.session_state["_sin_col_busqueda"] = True
-                              query, query_vieja = query_vieja(), None
+                          if _falta_col_busqueda(e) and not st.session_state.get("_sin_col_busqueda"):
+                              st.session_state["_sin_col_busqueda"] = True     # se reintenta sin `busqueda`
                               continue
                           time.sleep(1)
-                  if resp is None:
+                  if productos is None:
                       st.error(f"No se pudo consultar la base de datos: {ultimo_error}")
                       productos, total_coincidencias = [], 0
-                  else:
-                      productos = resp.data
-                      total_coincidencias = resp.count if resp.count is not None else len(productos)
-
+              if productos and not _usar_memo:          # solo se guarda lo que salió bien
+                  st.session_state["_pag_memo"] = {"clave": _clave_pag, "t": time.time(), "productos": productos,
+                                                   "total": total_coincidencias, "hay_exacto": hay_exacto,
+                                                   "ventas": None}
 
           if productos:
               total_paginas = max(1, ((total_coincidencias - 1) // tamano_pagina) + 1)
@@ -1700,8 +1789,13 @@ if tab1 is not None:
                       st.caption(f"Del más reciente al más antiguo · productos {desde + 1} a {min(hasta + 1, total_coincidencias)} "
                                  f"(Página {pagina + 1} de {total_paginas}). Escribe un modelo o palabra clave arriba para buscar.")
                   else:
-                      st.subheader(f"Resultados para \"{busqueda}\" ({total_coincidencias} encontrados):")
-                      st.caption(f"Mostrando productos *{desde + 1}* a *{min(hasta + 1, total_coincidencias)}* (Página {pagina + 1} de {total_paginas})")
+                      if busqueda:
+                          st.subheader(f"Resultados para \"{busqueda}\"" + (" en consignación" if solo_consig else "")
+                                       + f" ({total_coincidencias} encontrados):")
+                      else:
+                          st.subheader(f"🤝 Consignaciones ({total_coincidencias})")
+                      st.caption(("Del más nuevo al más viejo · " if por_nuevos else "")
+                                 + f"Mostrando productos *{desde + 1}* a *{min(hasta + 1, total_coincidencias)}* (Página {pagina + 1} de {total_paginas})")
                       if hay_exacto:
                           st.checkbox(f"Ver también los que contienen «{busqueda}» (otros modelos o fichas que lo mencionan)",
                                       key="ver_parciales")
@@ -1731,7 +1825,13 @@ if tab1 is not None:
                       _d = {}
                   if str((_d or {}).get("DISP", (_d or {}).get("DISPONIBILIDAD", ""))).strip().lower() == "v":
                       _vendidos_pag.append(_it.get("MODELO"))
-              _ventas_pag = ventas_de_modelos(_vendidos_pag)
+              _m = st.session_state.get("_pag_memo") or {}
+              if _m.get("clave") == _clave_pag and _m.get("ventas") is not None:
+                  _ventas_pag = _m["ventas"]                     # ya estaba en la memoria de la página
+              else:
+                  _ventas_pag = ventas_de_modelos(_vendidos_pag)
+                  if _m.get("clave") == _clave_pag:
+                      _m["ventas"] = _ventas_pag
           
               if _vista_lista:
                   _render_lista_busqueda(productos, _ventas_pag)
@@ -1806,8 +1906,7 @@ if tab1 is not None:
                           st.link_button("Fotos en Google Drive", url_drive, use_container_width=True, key=f"drive_btn_{mod_p}_{idx}")
                       
                           if puede(user, "editar_ficha"):
-                              if st.button("Editar Ficha Completa", use_container_width=True, key=f"btn_edit_{mod_p}_{idx}"):
-                                  modal_editar_completo(mod_p, pdata)
+                              _boton_editar(mod_p, pdata, "Editar Ficha Completa", f"btn_edit_{mod_p}_{idx}")
                           if puede(user, "shopify_botones"):
                               if st.button("Sincronizar con Shopify", use_container_width=True, key=f"btn_sync_{mod_p}_{idx}",
                                            help="Revisa este producto contra Shopify (nombre, descripción, precio) y su disponibilidad, y copia lo que haya cambiado hacia donde corresponda."):
@@ -1847,8 +1946,10 @@ if tab1 is not None:
                           st.rerun()
           elif solo_sin_precio:
               st.success("No hay productos disponibles ni reservados sin redondeo showroom.")
+          elif solo_consig and not busqueda:
+              st.info("No hay piezas en consignación.")
           else:
-              st.warning(f"No se encontraron coincidencias para '{busqueda}'.")
+              st.warning(f"No se encontraron coincidencias para '{busqueda}'" + (" en consignación." if solo_consig else "."))
       else:
           st.info("Escribe un modelo o palabra clave para buscar productos.")
       
