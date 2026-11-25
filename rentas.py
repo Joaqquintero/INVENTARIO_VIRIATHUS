@@ -716,33 +716,47 @@ def _detalle(sb, user, rid):
             _form_reset((r, its))
             ss["rt_ir"] = "Nueva cotización de renta"
             st.rerun()
-        with a2.popover("Confirmar renta", use_container_width=True):
-            prob = choques(sb, its, r["retiro"], r["devolucion"], sin_id=rid)
-            for p_ in prob:
-                st.error(p_)
-            if not firma:
-                st.warning("El cliente todavía no firmó la cotización.")
-            st.caption("Las piezas quedan «En renta» desde el retiro hasta que registres la devolución.")
-            q_v, q_c = codigos.pedir_identidad(sb, f"rt_conf_{rid}")
-            if st.button("Sí, confirmar", type="primary", key=f"rt_conf_ok_{rid}", disabled=bool(prob)) \
-                    and (quien := codigos.confirmar(sb, q_v, q_c)):
-                cambiar_estado(sb, rid, CONFIRMADA, quien)
-                _ok(f"Renta {rid} confirmada: las piezas quedan en renta del {_corta(r['retiro'])} al "
-                    f"{_corta(r['devolucion'])}.")
-                st.rerun()
-        _cancelar(sb, rid, a3)
+        conf = a2.toggle("Confirmar renta", key=f"rt_conf_on_{rid}")
+        canc = a3.toggle("Cancelar renta", key=f"rt_canc_on_{rid}")
+        if conf:
+            with st.container(border=True):
+                st.markdown("**Confirmar renta**")
+                prob = choques(sb, its, r["retiro"], r["devolucion"], sin_id=rid)
+                for p_ in prob:
+                    st.error(p_)
+                if not firma:
+                    st.warning("El cliente todavía no firmó la cotización.")
+                st.caption("Las piezas quedan «En renta» desde el retiro hasta que registres la devolución.")
+                q_v, q_c = codigos.pedir_identidad(sb, f"rt_conf_{rid}")
+                if st.button("Sí, confirmar", type="primary", key=f"rt_conf_ok_{rid}", disabled=bool(prob)) \
+                        and (quien := codigos.confirmar(sb, q_v, q_c)):
+                    cambiar_estado(sb, rid, CONFIRMADA, quien)
+                    _ok(f"Renta {rid} confirmada: las piezas quedan en renta del {_corta(r['retiro'])} al "
+                        f"{_corta(r['devolucion'])}.")
+                    st.rerun()
+        if canc:
+            _cancelar(sb, r)
     elif r["estado"] == CONFIRMADA:
         st.divider()
-        a1, a2 = st.columns([2, 1])
-        if a1.toggle("Registrar devolución", key=f"rt_dev_on_{rid}"):
+        a1, a2 = st.columns(2)
+        dev = a1.toggle("Registrar devolución", key=f"rt_dev_on_{rid}")
+        canc = a2.toggle("Cancelar renta", key=f"rt_canc_on_{rid}")
+        if dev:
             _devolucion(sb, r, its)
-        if _fecha(r["retiro"]) > _hoy():
-            _cancelar(sb, rid, a2)
+        if canc:
+            _cancelar(sb, r)
 
 
-def _cancelar(sb, rid, col):
-    with col.popover("Cancelar renta", use_container_width=True):
-        st.caption("La renta queda cancelada y sus piezas libres.")
+def _cancelar(sb, r):
+    """Cancelar (cotización o renta confirmada que no se va a hacer). Se dibuja a todo lo ancho para que los
+    avisos (código incorrecto, etc.) se vean."""
+    rid = r["id"]
+    with st.container(border=True):
+        st.markdown("**Cancelar renta**")
+        if r["estado"] == CONFIRMADA and _fecha(r["retiro"]) <= _hoy():
+            st.warning("Esta renta ya empezó (fecha de retiro pasada). Si las piezas ya se las llevaron y hay que "
+                       "cobrar, usa «Registrar devolución». Cancela solo si al final no se la llevaron.")
+        st.caption("La renta queda cancelada, sus piezas libres y el link para firmar deja de servir.")
         q_v, q_c = codigos.pedir_identidad(sb, f"rt_canc_{rid}")
         if st.button("Sí, cancelar", key=f"rt_canc_ok_{rid}") and (quien := codigos.confirmar(sb, q_v, q_c)):
             cambiar_estado(sb, rid, CANCELADA, quien)
