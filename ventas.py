@@ -252,6 +252,26 @@ def etiqueta_reserva(sb, modelo):
     return "por una cotización" + (f" de {quien}" if quien else "")
 
 
+def bloqueo_renta(sb, modelo, unidades=1):
+    """Error si el modelo está EN RENTA (rentas.py): se puede cotizar, pero no vender hasta su devolución."""
+    try:
+        import rentas
+        if not rentas.bloqueo_venta(sb, modelo):        # no está en renta (lo normal): sin consultar la ficha
+            return None
+        f = rentas.ficha(sb, modelo) or {}               # varias unidades: ¿alcanzan las que no están rentadas?
+        return rentas.bloqueo_venta(sb, modelo, f.get("unidades"), unidades)
+    except Exception:
+        return None
+
+
+def aviso_renta(sb, modelo):
+    try:
+        import rentas
+        return rentas.aviso_venta(sb, modelo)
+    except Exception:
+        return None
+
+
 def texto_reservado(sb, modelo):
     """«El modelo X ya está reservado por una cotización de NOMBRE» (o «en la remisión abierta de CLIENTE»)."""
     return f"El modelo {modelo} ya está reservado {etiqueta_reserva(sb, modelo)}"
@@ -570,6 +590,8 @@ def editar_items_pedido(sb, ped, filas, tomar_inventario=True, aceptar_vendidos=
                 if info.get("reservado") and not aceptar_vendidos:
                     raise ValueError(f"Renglón {n}: {texto_reservado(sb, modelo)}. "
                                      "Conviértela a pedido desde Cotizaciones, o marca «Aceptar modelos que ya figuran como vendidos».")
+                if (en_renta := bloqueo_renta(sb, modelo, cantidad)):
+                    raise ValueError(f"Renglón {n}: {en_renta}")
                 if info["vendido"] and not aceptar_vendidos:
                     raise ValueError(f"Renglón {n}: el modelo {modelo} ya figura como vendido. "
                                      "Marca «Aceptar modelos que ya figuran como vendidos» si es correcto.")
@@ -1166,7 +1188,11 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
                 st.error(f"Error consultando inventario: {ex}")
             if prod is None:
                 st.error(f"El modelo {m} no existe en el inventario. Si no tiene número, usa 'Producto sin número (S/N)'.")
+            elif (en_renta := bloqueo_renta(sb, m, int(cant_txt))):
+                st.error(en_renta)
             else:
+                if (a_renta := aviso_renta(sb, m)):
+                    st.warning(a_renta)
                 if prod.get("reservado") and not ss.get("vt_desde_cot"):
                     st.warning(f"{texto_reservado(sb, m)}. Se agregó de todos modos; "
                                "si es la misma venta, mejor usa «Pasar a pedido» desde Cotizaciones.")
@@ -1381,6 +1407,10 @@ def tab_nuevo_pedido(sb, user, desde_cot=False):
         cambios_precio = precios.cambios_de_items(items)
         if cambios_precio and not precio_aut:
             errores.append("Hay precios o descuentos de más de 10% que necesitan autorización: marca la casilla y elige quién autorizó.")
+        if not cancelado:
+            for it in items:
+                if not it["es_sn"] and (en_renta := bloqueo_renta(sb, it["modelo"], int(_num(it.get("cantidad"), 1)))):
+                    errores.append(en_renta)
         if dc and not cancelado:
             # cotización que no apartó (vigencia 0): revisar que sus modelos sigan disponibles
             for it in items:
@@ -1580,6 +1610,112 @@ def _lista_pedidos(_sb, busq, filtro_status, sin_costo, ve_costos, limite, filtr
     return filas
 
 
+MESES_ES = ("enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre",
+            "noviembre", "diciembre")
+ROLES_DESCARGA_MES = ("Claudia", "Dios")           # «Descargar pedidos del mes» (Excel)
+
+
+def excel_pedidos_mes(sb, anio, mes):
+    """Excel con los pedidos de un mes: hoja Pedidos (un renglón por pedido), Productos y Cobros.
+    Solo lectura; se arma al tocar el botón y no se guarda nada. Devuelve (bytes, cantidad de pedidos)."""
+    import io
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    ini = dt.date(anio, mes, 1)
+    fin = dt.date(anio + (mes == 12), mes % 12 + 1, 1)
+    peds = (sb.table("pedidos").select("*").gte("fecha", ini.isoformat()).lt("fecha", fin.isoformat())
+            .gte("numero_pedido", pedido_desde()).order("numero_pedido").execute().data or [])
+    nums = [p["numero_pedido"] for p in peds]
+    its, pags, vends = [], [], {}
+    for i in range(0, len(nums), 200):
+        g = nums[i:i + 200]
+        its += sb.table("pedido_items").select("*").in_("numero_pedido", g).order("id").execute().data or []
+        pags += sb.table("pedido_pagos").select("*").in_("numero_pedido", g).order("id").execute().data or []
+        for v in sb.table("pedido_vendedores").select("numero_pedido,vendedor").in_("numero_pedido", g).execute().data or []:
+            vends.setdefault(v["numero_pedido"], []).append(v["vendedor"])
+
+    wb = Workbook()
+    negrita, fondo = Font(bold=True, color="FFFFFF"), PatternFill("solid", fgColor="1F1F1F")
+
+    def hoja(ws, titulo, columnas, filas, dinero=()):
+        ws.title = titulo
+        ws.append([c for c, _ in columnas])
+        for c in ws[1]:
+            c.font, c.fill = negrita, fondo
+        for f in filas:
+            ws.append([k(f) if callable(k) else f.get(k) for _, k in columnas])
+        for j, (c, _) in enumerate(columnas, start=1):
+            letra = get_column_letter(j)
+            ws.column_dimensions[letra].width = max(10, min(45, len(c) + 4))
+            if c in dinero:
+                for celda in ws[letra][1:]:
+                    celda.number_format = '"$"#,##0.00'
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+    n = lambda k: (lambda f: _num(f.get(k)))
+    hoja(wb.active, "Pedidos", [
+        ("N° PEDIDO", "numero_pedido"), ("FECHA", "fecha"), ("CLIENTE", "cliente"),
+        ("VENDEDOR(ES)", lambda f: ", ".join(vends.get(f["numero_pedido"], []))),
+        ("CATEGORÍA", "categoria_venta"), ("OBSERVACIONES", "estado_pedido"), ("STATUS", "status"),
+        ("SUBTOTAL", n("subtotal")), ("IVA", n("iva")), ("ENVÍO", n("envio")), ("TOTAL", n("total")),
+        ("COBRADO", n("anticipo")), ("SALDO", n("saldo")), ("COSTO", n("costo_total")),
+        ("UTILIDAD", lambda f: round(_num(f.get("total")) - _num(f.get("costo_total")), 2)),
+        ("EFECTIVO", n("efectivo")), ("FACTURADO CON IVA", n("facturado_con_iva")),
+        ("FACTURADO SIN IVA", n("facturado_sin_iva")), ("N° FACTURA", "no_factura"),
+        ("REQUIERE FACTURA", lambda f: "Sí" if f.get("requiere_facturacion") else "No"),
+        ("NOTAS", "observaciones")], peds,
+        dinero=("SUBTOTAL", "IVA", "ENVÍO", "TOTAL", "COBRADO", "SALDO", "COSTO", "UTILIDAD", "EFECTIVO",
+                "FACTURADO CON IVA", "FACTURADO SIN IVA"))
+    hoja(wb.create_sheet(), "Productos", [
+        ("N° PEDIDO", "numero_pedido"), ("MODELO", lambda f: "S/N" if f.get("es_sn") else f.get("modelo")),
+        ("DESCRIPCIÓN", "descripcion"), ("CANTIDAD", "cantidad"), ("PRECIO UNITARIO", n("precio_unitario")),
+        ("DESCUENTO %", n("descuento_pct")), ("TOTAL", n("total_linea")), ("COSTO UNITARIO", n("costo_unitario"))],
+        its, dinero=("PRECIO UNITARIO", "TOTAL", "COSTO UNITARIO"))
+    hoja(wb.create_sheet(), "Cobros", [
+        ("N° PEDIDO", "numero_pedido"), ("FECHA", "fecha_pago"), ("FORMA DE PAGO", "forma_pago"),
+        ("BANCO / CAJA", "banco_caja"), ("MONTO", n("monto"))], pags, dinero=("MONTO",))
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue(), len(peds)
+
+
+def _descarga_mes(sb, user):
+    """Ventas › Pedidos: descargar en Excel todos los pedidos de un mes (solo Claudia y Dios)."""
+    if user.get("role") not in ROLES_DESCARGA_MES:
+        return
+    ss = st.session_state
+    with st.expander("📥 Descargar pedidos de un mes (Excel)"):
+        a, m, meses = dt.date.today().year, dt.date.today().month, []
+        for _ in range(24):                               # este mes y los 23 anteriores
+            meses.append((a, m))
+            a, m = (a - 1, 12) if m == 1 else (a, m - 1)
+        elegido = st.selectbox("Mes", meses, key="vp_xls_mes",
+                               format_func=lambda am: f"{MESES_ES[am[1] - 1].capitalize()} {am[0]}")
+        st.caption("Tres hojas: Pedidos (un renglón por pedido, con totales, cobrado, saldo y facturación), "
+                   "Productos y Cobros.")
+        listo = ss.get("vp_xls")
+        if listo and listo[0] != elegido:                 # cambió el mes: se descarta el anterior
+            ss.pop("vp_xls", None)
+            listo = None
+        if st.button("Preparar Excel", key="vp_xls_btn"):
+            with st.spinner("Armando el Excel…"):
+                try:
+                    datos, cant = excel_pedidos_mes(sb, *elegido)
+                    ss["vp_xls"] = listo = (elegido, datos, cant)
+                except Exception as ex:
+                    st.error(f"No se pudo armar el Excel: {ex}")
+        if listo:
+            (anio, mes), datos, cant = listo
+            if not cant:
+                st.info(f"No hay pedidos en {MESES_ES[mes - 1]} {anio}.")
+            else:
+                st.download_button(f"⬇️ Descargar {cant} pedido(s) de {MESES_ES[mes - 1]} {anio}", datos,
+                                   file_name=f"pedidos_{anio}-{mes:02d}.xlsx", key="vp_xls_dl",
+                                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
 def tab_pedidos(sb, user):
     ve_costos = user["role"] in ROLES_COSTOS
     puede_cancelar = user["role"] in ROLES_CANCELAR
@@ -1593,6 +1729,7 @@ def tab_pedidos(sb, user):
 
     sel = ss.get("vp_abierto")
     if sel is None:
+        _descarga_mes(sb, user)
         _vista_lista_pedidos(sb, user, ve_costos)
         return
     volver_a = ss.get("vp_volver_a")

@@ -7,3 +7,4 @@ pandas
 reportlab 
 requests
 pypdf
+pypdfium2

@@ -479,6 +479,13 @@ def vender(sb, modelo, unidades=1):
     if est == "r":
         return False, f"El modelo {modelo} ya está reservado.", None, 0
     stock = reservas._num(d.get("CANTIDAD"), 1.0)
+    try:
+        import rentas
+        en_renta = rentas.bloqueo_venta(sb, modelo, stock, unidades)
+    except Exception:
+        en_renta = None
+    if en_renta:
+        return False, en_renta, None, 0
     if stock <= 0:
         stock = 1.0
     if unidades > stock:
