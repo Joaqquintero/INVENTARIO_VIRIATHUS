@@ -25,7 +25,7 @@ from reportlab.platypus import (BaseDocTemplate, Flowable, Frame, Image, KeepTog
 # ----------------------------------------------------------------------
 # Datos fijos del formato (cámbialos aquí si algo cambia)
 # ----------------------------------------------------------------------
-CORREO_CONSTANCIA = "marisol@viriathus.com.mx"   # "Enviar Constancia de Situación Fiscal a:"
+CORREO_CONSTANCIA = "ventas@viriathus.com.mx o a +52 55 4388 0331"   # "Enviar Constancia de Situación Fiscal a:"
 DIRECCION = "SHOWROOM Mérida 22, Col. Roma Norte (esq. Puebla) C.P.:06700, CDMX 55 2624.3552 Y 53 ext. 101"
 WEB = "viriathus.com.mx"
 CORREO = "info@viriathus.com.mx"
@@ -377,9 +377,9 @@ def _story_pedido(pedido, items, vendedores, vacias=None):
     # ---- Datos de facturación (solo si se pidieron o traen datos) ----
     if _mostrar_seccion(pedido, "requiere_facturacion", FACTURA_CAMPOS):
         story.append(_p("DATOS DE FACTURACIÓN", ST_SEC))
-        story.append(_fila_campos([("Enviar Constancia de Situación Fiscal a:", CORREO_CONSTANCIA, 168),
-                                   ("Uso CFDI:", pedido.get("uso_cfdi"), 46)]))
-        story.append(_fila_campos([("Concepto:", pedido.get("concepto"), 48)]))
+        story.append(_fila_campos([("Enviar Constancia de Situación Fiscal a:", CORREO_CONSTANCIA, 168)]))
+        story.append(_fila_campos([("Uso CFDI:", pedido.get("uso_cfdi"), 46),
+                                   ("Concepto:", pedido.get("concepto"), 48)]))
         story.append(_fila_campos([("Teléfono:", pedido.get("telefono_facturacion"), 48),
                                    ("eMail:", pedido.get("email_facturacion"), 80)]))
         story.append(_fila_campos([("Notas:", pedido.get("notas_facturacion"), 40)], ancho_total=ANCHO - 20))
