@@ -470,3 +470,71 @@ def render_etiquetas(sb):
         descargar(st, "Descargar PDF de etiquetas", pdf, file_name="etiquetas.pdf", mime="application/pdf", key="et_desc")
         st.caption("Al imprimir, elige la Brother QL-800, el papel que coincide con tu rollo (p. ej. 29 mm × 90 mm), "
                    "tamaño real 100% (sin «ajustar a la página») y sin márgenes.")
+
+
+# ----------------------------------------------------------------------
+# Quitar de «🏷 En tienda» (Dios e Inventario): para las etiquetas que se hicieron sin querer
+# ----------------------------------------------------------------------
+RECIENTES = 60     # cuántas de las últimas piezas etiquetadas se muestran para elegir
+
+
+def quitar_etiquetados(sb, modelos, usuario):
+    """Borra los modelos de `etiquetados` (dejan de verse en «En tienda») y lo anota en el registro de cambios."""
+    modelos = list(dict.fromkeys(str(m).strip() for m in modelos if str(m or "").strip()))
+    for i in range(0, len(modelos), 200):
+        sb.table("etiquetados").delete().in_("modelo", modelos[i:i + 200]).execute()
+    if modelos:
+        import codigos
+        codigos.registrar(sb, usuario, "Quitó de «En tienda»", "producto", ", ".join(modelos)[:200], f"{len(modelos)} pieza(s)")
+    return len(modelos)
+
+
+def render_quitar_en_tienda(sb, user):
+    import pandas as pd
+    ss = st.session_state
+    st.subheader("Quitar de «🏷 En tienda»",
+                 help="Dios e Inventario. Para las piezas a las que se les hizo etiqueta sin querer: dejan de aparecer en "
+                      "«🏷 En tienda» de la app. No toca el inventario ni la pieza; si después se le vuelve a hacer "
+                      "etiqueta, vuelve a aparecer.")
+    if ss.get("et_quitar_msg"):
+        st.success(ss.pop("et_quitar_msg"))
+    try:
+        filas = (sb.table("etiquetados").select("modelo,actualizado,veces,usuario")
+                 .order("actualizado", desc=True).limit(RECIENTES).execute().data or [])
+    except Exception as ex:
+        st.caption(f"No se pudo leer la lista de etiquetados: {ex}")
+        return
+    if not filas:
+        st.caption("No hay piezas en «En tienda».")
+        return
+
+    nombres = _buscar_en_inventario(sb, [f["modelo"] for f in filas])
+    df = pd.DataFrame([{
+        "QUITAR": False,
+        "MODELO": f["modelo"],
+        "NOMBRE": (nombres.get(f["modelo"]) or {}).get("nombre", ""),
+        "ETIQUETADA": pd.to_datetime(f["actualizado"], utc=True).tz_convert("America/Mexico_City").strftime("%d/%m/%Y %H:%M"),
+        "QUIÉN": f.get("usuario") or "",
+        "VECES": int(f.get("veces") or 1),
+    } for f in filas])
+    st.caption(f"Las últimas {len(df)} piezas etiquetadas (la más reciente arriba). Marca las que no deberían estar en la tienda.")
+    editado = st.data_editor(
+        df, hide_index=True, use_container_width=True, num_rows="fixed", key="et_quitar_tabla",
+        disabled=["MODELO", "NOMBRE", "ETIQUETADA", "QUIÉN", "VECES"],
+        column_config={"QUITAR": st.column_config.CheckboxColumn("QUITAR", width="small")})
+    otros = st.text_input("¿No está en la lista? Escribe el o los modelos (separados por coma o espacio)",
+                          key="et_quitar_otros")
+
+    elegidos = list(editado.loc[editado["QUITAR"], "MODELO"]) + [m for m in re.split(r"[\s,;]+", otros) if m]
+    elegidos = list(dict.fromkeys(elegidos))
+    if st.button(f"Quitar {len(elegidos)} de «En tienda»" if elegidos else "Quitar de «En tienda»",
+                 type="primary", disabled=not elegidos, key="et_quitar_btn"):
+        try:
+            n = quitar_etiquetados(sb, elegidos, (user or {}).get("nombre") or (user or {}).get("role"))
+        except Exception as ex:
+            st.error(f"No se pudo quitar: {ex}")
+            return
+        ss["et_quitar_msg"] = f"Listo: {n} pieza(s) ya no aparecen en «En tienda»: {', '.join(elegidos)}."
+        for k in ("et_quitar_tabla", "et_quitar_otros"):
+            ss.pop(k, None)
+        st.rerun()

@@ -20,7 +20,7 @@ if MOSTRAR_VENTAS:
 from shopify_descripciones import render_traer_descripciones
 from shopify_ventas import sincronizar_en_segundo_plano, aviso_pendiente, render_ventas_shopify
 from shopify_lista import render_lista_shopify
-from etiquetas import render_etiquetas
+from etiquetas import render_etiquetas, render_quitar_en_tienda
 from permisos import puede
 from shopify_productos import (sincronizar_productos_en_segundo_plano, conflictos_pendientes, render_sync_productos,
                                registrar_envio, sincronizar_ficha)
@@ -203,9 +203,6 @@ def _clave_modelo(m):
    return (int(base) if base.isdigit() else -1, str(m))
 
 
-MAX_ORDENAR = 6000          # búsquedas enormes (p. ej. «de»): se ordenan las primeras 6000 coincidencias
-
-
 def productos_por_nuevos(armar, desde, n):
    """Página de resultados del más nuevo al más viejo (consignaciones). `armar(sel)` devuelve la consulta ya filtrada.
    1) trae SOLO la columna MODELO de todo lo encontrado (liviano), 2) la ordena como número,
@@ -225,7 +222,7 @@ def productos_por_nuevos(armar, desde, n):
                q = q.gt("MODELO", ultimo)
            filas = q.limit(1000).execute().data or []
            modelos += [str(f.get("MODELO", "")).strip() for f in filas]
-           if len(filas) < 1000 or len(modelos) >= MAX_ORDENAR:
+           if len(filas) < 1000:
                break
            ultimo = filas[-1].get("MODELO")
        modelos.sort(key=_clave_modelo, reverse=True)
@@ -1476,8 +1473,6 @@ if puede(user, "shopify_lista"):
     _nombres_tabs.append("Shopify")
 if MOSTRAR_VENTAS:
     _nombres_tabs.append("Ventas")
-if MOSTRAR_VENTAS and puede(user, "rentas"):
-    _nombres_tabs.append("Rentas")
 if MOSTRAR_VENTAS and puede(user, "resumen_mensual"):
     _nombres_tabs.append("Reportes")
 if _HAY_CAUDAL and puede(user, "caudal"):
@@ -1514,7 +1509,6 @@ tab5 = _seccion_si("Shopify")
 tab4 = _seccion_si("Ventas")
 tab_caudal = _seccion_si("Caudal")
 tab_reportes = _seccion_si("Reportes")
-tab_rentas = _seccion_si("Rentas")
 
 
 # Botón «Editar ficha» dentro de un fragmento: al tocarlo se vuelve a correr SOLO este botón (no todo app.py:
@@ -1570,26 +1564,8 @@ def _columnas(spec):
 _ANCHOS_LISTA = [0.9, 0.7, 3.2, 1.6, 1.3, 0.45, 0.45, 0.45, 0.45]
 
 
-def _etiqueta_renta(rentas_pag, mod_p, pdata):
-   """(«en_renta» | «futura» | None, texto) de la pieza según las rentas confirmadas (rentas.py)."""
-   try:
-       import rentas as _rentas
-       return _rentas.etiqueta(rentas_pag.get(str(mod_p).strip()), to_float(pdata.get("CANTIDAD", 1), 1.0))
-   except Exception:
-       return None, ""
-
-
-def _rentas_de_pagina(productos):
-   try:
-       import rentas as _rentas
-       return _rentas.rentas_de(supabase, [p.get("MODELO") for p in productos])
-   except Exception:
-       return {}
-
-
-def _render_lista_busqueda(productos, ventas_pag, rentas_pag=None):
+def _render_lista_busqueda(productos, ventas_pag):
    """Una fila por producto: modelo, foto chica, nombre, estado, redondeo showroom y botones de solo ícono."""
-   rentas_pag = rentas_pag or {}
    cab = _columnas(_ANCHOS_LISTA)
    for c, t in zip(cab, ["Modelo", "Foto", "Nombre", "Estado", "Redondeo showroom"]):
        c.caption(t)
@@ -1619,9 +1595,6 @@ def _render_lista_busqueda(productos, ventas_pag, rentas_pag=None):
        else:
            _consig = " ".join(str(pdata.get("CONSIGNADOR") or "").split()) if pdata.get("CONSIGNACION") else ""
            c_est.markdown(":green[**Disponible**]" + (f"  \n:gray[Consig. {_consig}]" if _consig else ""))
-       _est_r, _txt_r = _etiqueta_renta(rentas_pag, mod_p, pdata)
-       if _est_r:
-           c_est.markdown((":violet" if _est_r == "en_renta" else ":blue") + f"[**{_txt_r}**]")
        _precio = to_float(pdata.get("REDONDEO_SHOWROOM", 0))
        c_pre.write(f"${_precio:,.2f}" if _precio else "—")
 
@@ -1669,7 +1642,7 @@ if tab1 is not None:
       solo_sin_precio = False
       if puede(user, "sin_precio"):
           solo_sin_precio = st.checkbox(
-              "Solo sin redondeo showroom (disponibles y reservados)", key="filtro_sin_precio",
+              "Solo sin redondeo (disponibles y reservados)", key="filtro_sin_precio",
               help="Muestra solo los productos disponibles o reservados con el REDONDEO SHOWROOM en 0 o vacío. "
                    "Al ponerle precio y guardar la ficha, el producto sale de esta lista.")
 
@@ -1688,8 +1661,6 @@ if tab1 is not None:
       if solo_sin_precio:
           busqueda = "__sin_precio__"         # la búsqueda de texto no se usa con esta casilla
   
-      if busqueda and not modo_rango:
-          por_nuevos = True                     # toda búsqueda: del modelo más nuevo al más viejo
       if solo_sin_precio:
           solo_consig = por_nuevos = False      # «sin redondeo» ya viene del más nuevo al más viejo
       mostrar_ultimos = not busqueda and not solo_consig
@@ -1862,9 +1833,8 @@ if tab1 is not None:
                   if _m.get("clave") == _clave_pag:
                       _m["ventas"] = _ventas_pag
           
-              _rentas_pag = _rentas_de_pagina(productos)        # piezas en renta (una consulta, con memoria)
               if _vista_lista:
-                  _render_lista_busqueda(productos, _ventas_pag, _rentas_pag)
+                  _render_lista_busqueda(productos, _ventas_pag)
 
               for idx, item in enumerate([] if _vista_lista else productos):     # vista de tarjetas
                   mod_p = item.get("MODELO")
@@ -1910,10 +1880,6 @@ if tab1 is not None:
                           else:
                               _consig = " ".join(str(pdata.get("CONSIGNADOR") or "").split()) if pdata.get("CONSIGNACION") else ""
                               st.success("Estado: DISPONIBLE" + (f"  \n*Consignación de {_consig}*" if _consig else ""))
-                          _est_r, _txt_r = _etiqueta_renta(_rentas_pag, mod_p, pdata)
-                          if _est_r:
-                              st.info(("🎬 " if _est_r == "en_renta" else "📅 ") + _txt_r
-                                      + ("  \n*Se puede cotizar, no vender.*" if _est_r == "en_renta" else ""))
                           
                           st.write(f"*Ubicación:* {pdata.get('UBICACION', 'N/A')}")
                           st.write(f"*Categoría:* {pdata.get('CATEGORIA', 'N/A')}")
@@ -2011,18 +1977,15 @@ if tab3 is not None:
           st.divider()
           with st.container(border=True):
               render_etiquetas(supabase)
+          if puede(user, "quitar_en_tienda"):
+              with st.container(border=True):
+                  render_quitar_en_tienda(supabase, user)
 
 
 # TAB 4: VENTAS
 if tab4 is not None:
    with tab4:
        render_ventas(supabase, user)
-
-# RENTAS: cotización de renta, firma, confirmación y devolución (rentas.py)
-if tab_rentas is not None:
-   with tab_rentas:
-       import rentas as _rentas
-       _rentas.render_rentas(supabase, user)
 
 # REPORTES: resumen mensual, anual y descuentos
 if tab_reportes is not None:
@@ -2060,4 +2023,4 @@ if tab5 is not None:
       else:
           st.info("Tu rol no tiene acceso a esta sección.")
 
-      #Para iniciar, en terminal : streamlit run app.py
+      #Para iniciar, en terminal : streamlit run app.py
