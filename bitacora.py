@@ -23,6 +23,7 @@ TAREAS = {
     "disponibilidad": "Shopify: diferencias de disponibilidad (segundo plano)",
     "shopify_lista": "Shopify: lista de productos (segundo plano)",
     "cotizaciones": "Cotizaciones: vencimientos (segundo plano)",
+    "shopify_orden": "Shopify: agotados al fondo (segundo plano)",
 }
 
 
